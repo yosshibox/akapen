@@ -1,0 +1,10 @@
+[package]
+name = "akapen-io"
+description = "Akapen I/O helpers: image decode adapters, sequence detection, output naming, path normalization (M0 scaffold)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
