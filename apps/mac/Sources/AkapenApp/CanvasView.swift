@@ -281,6 +281,11 @@ final class CanvasNSView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        // Claim first responder so keyDown (shortcuts, Space-pan) reaches this
+        // view even if focus was elsewhere (e.g. a toolbar text field). Without
+        // this, a click here would draw but leave keyboard focus stuck on the
+        // previous responder and shortcuts would silently stop firing.
+        window?.makeFirstResponder(self)
         if spaceDown { return } // pan gesture; ignore drawing
         state?.applyToolState()
         send(event, phase: .down)
@@ -396,7 +401,14 @@ final class CanvasNSView: NSView {
         case 33: return Int32(AKAPEN_PK_BRACKET_LEFT)
         case 30: return Int32(AKAPEN_PK_BRACKET_RIGHT)
         case 27: return Int32(AKAPEN_PK_MINUS)
-        case 24: return Int32(AKAPEN_PK_CARET) // JIS '^' key position (US '=')
+        // keyCode 24 is JIS '^' *and* US '=' at the same physical position.
+        // Do NOT map it to AKAPEN_PK_CARET here: JIS '^' already resolves via
+        // the character-first path (produced char is '^'), and if this were
+        // mapped physically too, a US keyboard producing '=' at that position
+        // (which has no character-level rotate meaning) would incorrectly
+        // resolve to RotateRight through the physical fallback. Leaving it as
+        // AKAPEN_PK_OTHER means: JIS '^' still rotates (character match), US
+        // '=' does nothing (spec §3 — no physical CARET fallback needed).
         case 116: return Int32(AKAPEN_PK_PAGE_UP)
         case 121: return Int32(AKAPEN_PK_PAGE_DOWN)
         default: return Int32(AKAPEN_PK_OTHER)

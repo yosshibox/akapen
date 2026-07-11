@@ -171,6 +171,13 @@ fn resolve_char(ch: Option<char>, m: Modifiers) -> Option<Action> {
                 Action::FitToWindow
             }),
             ' ' => Some(Action::ZoomIn), // Cmd/Ctrl+Space (spec §3; see shell note re: Spotlight)
+            // mac alternative to Cmd+Space, which is reserved by Spotlight on
+            // most machines (Codex review, §3 shell note): primary+`=`/`+` zooms
+            // in, primary+`-` zooms out. The primary modifier means these never
+            // collide with the bare `-` (RotateLeft) or Shift+`-` (US
+            // RotateRight) shortcuts, which carry no primary modifier.
+            '=' | '+' => Some(Action::ZoomIn),
+            '-' => Some(Action::ZoomOut),
             // Any other primary combo (e.g. Cmd+O open, Cmd+S save) is left to
             // the OS/menu — do not steal it.
             _ => None,
@@ -401,6 +408,70 @@ mod tests {
             resolve(key(Some('_'), PhysicalKey::Minus, shift)),
             Some(Action::RotateRight),
             "US Shift+- = right rotate"
+        );
+    }
+
+    #[test]
+    fn mac_zoom_alternative_to_cmd_space() {
+        // Codex review: Cmd+Space is reserved by Spotlight on most macs, so a
+        // primary+`=`/`+`/`-` alternative is provided (spec §3 shell note).
+        let m = Modifiers::PRIMARY;
+        assert_eq!(
+            resolve(key(Some('='), PhysicalKey::Other, m)),
+            Some(Action::ZoomIn),
+            "Cmd+= = zoom in"
+        );
+        let mut shift = Modifiers::PRIMARY;
+        shift.shift = true;
+        assert_eq!(
+            resolve(key(Some('+'), PhysicalKey::Other, shift)),
+            Some(Action::ZoomIn),
+            "Cmd++ = zoom in"
+        );
+        assert_eq!(
+            resolve(key(Some('-'), PhysicalKey::Minus, m)),
+            Some(Action::ZoomOut),
+            "Cmd+- = zoom out"
+        );
+        // The primary modifier keeps these from colliding with the un-modified
+        // rotate shortcuts on the same characters.
+        assert_eq!(
+            resolve(key(Some('-'), PhysicalKey::Minus, Modifiers::NONE)),
+            Some(Action::RotateLeft),
+            "bare - still rotates left"
+        );
+        let mut shift_only = Modifiers::NONE;
+        shift_only.shift = true;
+        assert_eq!(
+            resolve(key(Some('_'), PhysicalKey::Minus, shift_only)),
+            Some(Action::RotateRight),
+            "Shift+- (US) still rotates right"
+        );
+    }
+
+    #[test]
+    fn us_layout_keycode24_position_does_not_rotate() {
+        // Regression (Codex review, High): on a US keyboard, the key at the
+        // JIS-`^` physical position produces `=`, not `^`, and must NOT rotate.
+        // The mac shell no longer maps that keyCode to PhysicalKey::Caret (only
+        // an actual JIS `^` character reaches RotateRight), so here we simulate
+        // the US case as the shell now does: character `=`, physical `Other`.
+        assert_eq!(
+            resolve(key(Some('='), PhysicalKey::Other, Modifiers::NONE)),
+            None,
+            "US '=' at the JIS caret position must not resolve to any action"
+        );
+        // JIS `^` (character) still rotates right, with or without a known
+        // physical code — this must keep working.
+        assert_eq!(
+            resolve(key(Some('^'), PhysicalKey::Caret, Modifiers::NONE)),
+            Some(Action::RotateRight),
+            "JIS '^' still rotates right"
+        );
+        assert_eq!(
+            resolve(key(Some('^'), PhysicalKey::Other, Modifiers::NONE)),
+            Some(Action::RotateRight),
+            "JIS '^' rotates right by character even if physical code is unmapped"
         );
     }
 
