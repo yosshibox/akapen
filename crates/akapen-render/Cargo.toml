@@ -1,0 +1,20 @@
+[package]
+name = "akapen-render"
+description = "Akapen GPU drawing crate (wgpu): device/surface setup, background texture display, view-transform uniforms. Phase c+ (wet ink / bake) is out of scope here — see spec §7."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+akapen-core = { path = "../akapen-core" }
+# wgpu: latest stable at implementation time (crates.io, 2026-07-11), pinned
+# exactly so the render pipeline doesn't drift under us mid-development.
+wgpu = "=30.0.0"
+# raw-window-handle version wgpu 30 itself depends on (see its Cargo.toml);
+# kept in sync rather than chosen independently, per spec instructions.
+raw-window-handle = "0.6"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "1"
+log = "0.4"

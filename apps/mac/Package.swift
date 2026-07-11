@@ -19,6 +19,10 @@ let linkRust: [LinkerSetting] = [
     // Rust std on macOS pulls in these system frameworks/libs.
     .linkedFramework("CoreFoundation"),
     .linkedFramework("Security"),
+    // Phase e: the wgpu Metal backend in libakapen needs these at link time.
+    .linkedFramework("Metal"),
+    .linkedFramework("QuartzCore"),
+    .linkedFramework("Foundation"),
 ]
 
 let package = Package(

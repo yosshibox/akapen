@@ -26,6 +26,11 @@ struct ContentView: View {
                     }
                 }
             }
+            .overlay(alignment: .trailing) {
+                SidePanelView(state: state)
+                    .padding(.trailing, 10)
+                    .padding(.vertical, 10)
+            }
             Divider()
             statusBar
         }
@@ -48,10 +53,16 @@ struct ContentView: View {
             .frame(width: 140)
             .onChange(of: state.tool) { _ in state.applyToolState() }
 
-            ColorPicker("", selection: $state.color, supportsOpacity: false)
-                .labelsHidden()
-                .frame(width: 44)
-                .onChange(of: state.color) { _ in state.applyToolState() }
+            ColorPicker(
+                "",
+                selection: Binding(
+                    get: { state.color },
+                    set: { state.setArbitraryColor($0) }
+                ),
+                supportsOpacity: false
+            )
+            .labelsHidden()
+            .frame(width: 44)
 
             HStack(spacing: 4) {
                 Text("Size")

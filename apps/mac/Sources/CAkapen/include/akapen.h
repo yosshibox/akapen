@@ -66,6 +66,79 @@ size_t akapen_composite_rgba(AkapenEngine *engine, uint8_t *out, size_t out_len)
  */
 int akapen_export_to_dir(AkapenEngine *engine, const char *dir, const char *stem);
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * Phase e: GPU surface path (spec §7.4-6 "GPU 描画(wgpu: Metal/D3D12)").
+ *
+ * Optional and additive: the CPU composite path (akapen_composite_rgba /
+ * akapen_export_to_dir) works identically whether or not a surface is
+ * attached. If akapen_render_attach fails, keep using the CPU path.
+ *
+ * Threading: all of the calls below (and the handle itself) must be driven
+ * from a single thread — on mac, the main thread, since attaching wires a
+ * CAMetalLayer into the given NSView.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/* Surface kind for AkapenSurfaceDesc.kind. */
+enum {
+    AKAPEN_SURFACE_METAL_LAYER = 0,     /* mac/iOS: handle is the NSView (not the layer) */
+    AKAPEN_SURFACE_HWND = 1,            /* Windows Win32 window handle */
+    AKAPEN_SURFACE_SWAPCHAIN_PANEL = 2  /* WinUI 3 SwapChainPanel (not yet wired; attach returns 4) */
+};
+
+/*
+ * A native drawing surface. `kind` (one of AKAPEN_SURFACE_*) selects how
+ * `handle` is interpreted. `width`/`height` are the surface size in physical
+ * pixels; `scale_factor` is the backing-store scale (e.g. 2.0 on Retina).
+ */
+typedef struct AkapenSurfaceDesc {
+    int32_t kind;
+    void *handle;        /* native view/window handle (meaning depends on kind) */
+    void *display;       /* native display/connection handle, or NULL */
+    uint32_t width;
+    uint32_t height;
+    float scale_factor;
+} AkapenSurfaceDesc;
+
+/*
+ * The on-screen view transform for a rendered frame, in physical pixels.
+ * `center_x`/`center_y` are the displayed image center; `scale` is the
+ * shell's zoom multiplied by the backing scale (uniform); `rotation_deg` is
+ * clockwise degrees. The image's own size is taken from the attached surface,
+ * not from this struct.
+ */
+typedef struct AkapenViewTransform {
+    float center_x;
+    float center_y;
+    float scale;
+    float rotation_deg;
+} AkapenViewTransform;
+
+/*
+ * Attaches a GPU render surface to the engine, seeding it with the current
+ * background and committed strokes. Returns 0 on success; non-zero means the
+ * caller should fall back to the CPU path:
+ *   1 = null engine, 2 = null desc, 3 = unknown kind,
+ *   4 = surface/adapter/device bring-up failed (e.g. no GPU, or SwapChainPanel).
+ * `desc->handle` must stay valid (and used only from this thread) for as long
+ * as the surface remains attached.
+ */
+int akapen_render_attach(AkapenEngine *engine, const AkapenSurfaceDesc *desc);
+
+/* Re-configures the attached surface for a new physical pixel size / backing
+ * scale (e.g. on window resize or a screen change). No-op if not attached. */
+void akapen_render_resize(AkapenEngine *engine, uint32_t width, uint32_t height, float scale);
+
+/* Draws and presents one frame through `view` (bakes any pending committed-
+ * stroke changes first). No-op if not attached. */
+void akapen_render_frame(AkapenEngine *engine, AkapenViewTransform view);
+
+/* Detaches and tears down the GPU surface. Safe when nothing is attached; the
+ * engine keeps working on the CPU path afterward. */
+void akapen_render_detach(AkapenEngine *engine);
+
+/* Returns 1 if a GPU surface is currently attached (GPU path active), else 0. */
+int akapen_render_available(AkapenEngine *engine);
+
 #ifdef __cplusplus
 }
 #endif

@@ -44,6 +44,34 @@ struct Committed {
     smoothing: Smoothing,
 }
 
+/// Tells a GPU (or any incremental) consumer how the last mutating call
+/// affects the offscreen-baked texture (spec §6.2 point 3: "確定ストロークの
+/// オフスクリーン焼き込み" — commit appends one stroke in O(1); undo/redo
+/// rebuild). Lets the consumer decide in O(1) whether it can draw just one
+/// more stroke into its existing texture or must re-bake from scratch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BakeDelta {
+    /// No committed-stroke change occurred (e.g. an ignored touch sample, or
+    /// a `Down`/`Move` sample that only extended the in-progress stroke).
+    None,
+    /// Exactly one stroke was appended to the baked layer/texture. Mirrors
+    /// `raster.rs::bake_stroke`'s incremental (non-rebaking) path.
+    Append,
+    /// The full committed history was (or must be) re-baked from scratch.
+    /// Mirrors `raster.rs::rebake_layer`.
+    Rebuild,
+}
+
+/// A borrowed view of one stroke plus the brush/smoothing it was (or is
+/// being) drawn with — enough for a consumer to call
+/// [`crate::tessellate::tessellate_stroke`] without cloning engine state.
+#[derive(Debug, Clone, Copy)]
+pub struct CommittedStrokeRef<'a> {
+    pub stroke: &'a Stroke,
+    pub brush: &'a Brush,
+    pub smoothing: Smoothing,
+}
+
 /// The drawing engine.
 pub struct Engine {
     background: RgbaBuffer,
@@ -106,6 +134,18 @@ impl Engine {
         (self.background.width, self.background.height)
     }
 
+    /// Borrowed view of the background bitmap (straight-alpha RGBA8, natural
+    /// size), for a GPU consumer to upload as its initial background texture
+    /// (spec §6.2 point 3 / Phase e FFI wiring). Read-only accessor added for
+    /// the render path; the field itself and its meaning are unchanged. The
+    /// backgrounds this engine holds are effectively opaque (alpha = 255), so
+    /// uploading them into a premultiplied-alpha pipeline
+    /// ([`akapen_render::BackgroundPipeline::set_background`]) is a no-op
+    /// difference from straight alpha.
+    pub fn background(&self) -> &RgbaBuffer {
+        &self.background
+    }
+
     // --- tool / style setters (spec §7.2) ---
 
     pub fn set_tool(&mut self, tool: Tool) {
@@ -145,9 +185,14 @@ impl Engine {
 
     /// Feeds one normalized pointer sample. Touch samples are ignored for
     /// drawing (palm rejection / pan is the shell's job, spec §5.2).
-    pub fn push_pointer(&mut self, s: PointerSample) {
+    ///
+    /// Returns a [`BakeDelta`] so a GPU consumer can decide in O(1) whether
+    /// to append the just-committed stroke to its offscreen texture (`Up`
+    /// that closes a stroke) or do nothing (`Down`/`Move`, or an ignored
+    /// touch sample).
+    pub fn push_pointer(&mut self, s: PointerSample) -> BakeDelta {
         if s.kind == PointerKind::Touch {
-            return;
+            return BakeDelta::None;
         }
         match s.phase {
             Phase::Down => {
@@ -156,22 +201,26 @@ impl Engine {
                 stroke.erase = self.tool == Tool::Eraser;
                 stroke.points.push(Point::new(s.x, s.y, s.pressure));
                 self.current = Some(stroke);
+                BakeDelta::None
             }
             Phase::Move => {
                 if let Some(stroke) = self.current.as_mut() {
                     stroke.points.push(Point::new(s.x, s.y, s.pressure));
                 }
+                BakeDelta::None
             }
             Phase::Up => {
                 if let Some(mut stroke) = self.current.take() {
                     stroke.points.push(Point::new(s.x, s.y, s.pressure));
-                    self.commit(stroke);
+                    self.commit(stroke)
+                } else {
+                    BakeDelta::None
                 }
             }
         }
     }
 
-    fn commit(&mut self, stroke: Stroke) {
+    fn commit(&mut self, stroke: Stroke) -> BakeDelta {
         // Pressure-stuck guard (spec §5.4): a pen stroke whose pressure has no
         // variation likely means the driver fed a constant value.
         if stroke.tool == Tool::Pen
@@ -187,21 +236,34 @@ impl Engine {
             smoothing: self.smoothing,
         });
         self.redo.clear();
+        BakeDelta::Append
     }
 
     // --- history (spec §7.2 undo/redo, stroke-level) ---
 
-    pub fn undo(&mut self) {
+    /// Undoes the last committed stroke. Returns [`BakeDelta::Rebuild`] when
+    /// a stroke was undone (the layer was rebaked from the remaining
+    /// history), or [`BakeDelta::None`] when there was nothing to undo.
+    pub fn undo(&mut self) -> BakeDelta {
         if let Some(c) = self.committed.pop() {
             self.redo.push(c);
             self.rebake();
+            BakeDelta::Rebuild
+        } else {
+            BakeDelta::None
         }
     }
 
-    pub fn redo(&mut self) {
+    /// Redoes the last undone stroke. Redo re-bakes incrementally (mirrors
+    /// `commit`), so this returns [`BakeDelta::Append`] when a stroke was
+    /// redone, or [`BakeDelta::None`] when there was nothing to redo.
+    pub fn redo(&mut self) -> BakeDelta {
         if let Some(c) = self.redo.pop() {
             bake_stroke(&mut self.layer, &c.stroke, &c.brush, c.smoothing);
             self.committed.push(c);
+            BakeDelta::Append
+        } else {
+            BakeDelta::None
         }
     }
 
@@ -240,6 +302,38 @@ impl Engine {
     /// The transparent strokes-only layer (committed strokes), for overlay.
     pub fn strokes_layer(&self) -> &RgbaBuffer {
         &self.layer
+    }
+
+    // --- GPU-consumer accessors (spec §7.2 / §6.2 point 3) ---
+
+    /// Borrowed view of the committed strokes, each paired with the
+    /// brush/smoothing it was drawn with (1:1 with what `rebake()` feeds
+    /// `rebake_layer`). A [`BakeDelta::Rebuild`] consumer re-tessellates
+    /// this whole sequence; a [`BakeDelta::Append`] consumer only needs the
+    /// last entry — and can fetch it in O(1) via `.next_back()`
+    /// ([`DoubleEndedIterator`], backed by `Vec`'s slice iterator) instead of
+    /// draining the whole iterator with `.last()` (review perf finding used
+    /// by `akapen_render::plan_bake`'s `Append` arm: `.last()` was O(n) per
+    /// commit, O(n²) over a whole session).
+    pub fn committed_strokes(
+        &self,
+    ) -> impl ExactSizeIterator<Item = CommittedStrokeRef<'_>> + DoubleEndedIterator {
+        self.committed.iter().map(|c| CommittedStrokeRef {
+            stroke: &c.stroke,
+            brush: &c.brush,
+            smoothing: c.smoothing,
+        })
+    }
+
+    /// The in-progress ("wet ink") stroke, if any, paired with the *current*
+    /// tool's brush/smoothing (1:1 with what `composite_for_display` bakes
+    /// it with). `None` when no stroke is in progress.
+    pub fn current_stroke(&self) -> Option<CommittedStrokeRef<'_>> {
+        self.current.as_ref().map(|stroke| CommittedStrokeRef {
+            stroke,
+            brush: &self.brush,
+            smoothing: self.smoothing,
+        })
     }
 
     // --- export (spec §4.3 / §7.2) ---
@@ -473,5 +567,88 @@ mod tests {
         assert!(e.is_dirty());
         e.undo();
         assert!(!e.is_dirty(), "after undoing the only stroke");
+    }
+
+    // --- BakeDelta / accessors (Phase 0) ---
+
+    #[test]
+    fn push_pointer_reports_append_only_on_commit() {
+        let mut e = Engine::new(30, 30);
+        e.set_size(8.0);
+        assert_eq!(e.push_pointer(down(5.0, 5.0, 1.0)), BakeDelta::None);
+        assert_eq!(e.push_pointer(mv(10.0, 5.0, 1.0)), BakeDelta::None);
+        assert_eq!(e.push_pointer(up(15.0, 5.0, 1.0)), BakeDelta::Append);
+    }
+
+    #[test]
+    fn touch_sample_reports_none() {
+        let mut e = Engine::new(20, 20);
+        let touch = PointerSample {
+            x: 10.0,
+            y: 10.0,
+            pressure: 1.0,
+            kind: PointerKind::Touch,
+            phase: Phase::Down,
+        };
+        assert_eq!(e.push_pointer(touch), BakeDelta::None);
+    }
+
+    #[test]
+    fn stray_up_without_down_reports_none() {
+        // No preceding Down: current is None, so Up has nothing to commit.
+        let mut e = Engine::new(20, 20);
+        assert_eq!(e.push_pointer(up(5.0, 5.0, 1.0)), BakeDelta::None);
+    }
+
+    #[test]
+    fn undo_redo_report_rebuild_and_append_or_none() {
+        let mut e = Engine::new(30, 30);
+        e.set_size(8.0);
+        // Nothing committed yet.
+        assert_eq!(e.undo(), BakeDelta::None);
+        assert_eq!(e.redo(), BakeDelta::None);
+
+        draw_line(&mut e, (5.0, 15.0), (25.0, 15.0), 1.0);
+        assert_eq!(e.undo(), BakeDelta::Rebuild);
+        assert_eq!(e.undo(), BakeDelta::None, "already empty");
+        assert_eq!(e.redo(), BakeDelta::Append);
+        assert_eq!(e.redo(), BakeDelta::None, "nothing left to redo");
+    }
+
+    #[test]
+    fn committed_strokes_accessor_matches_history() {
+        let mut e = Engine::new(30, 30);
+        e.set_size(8.0);
+        draw_line(&mut e, (5.0, 15.0), (25.0, 15.0), 1.0);
+        e.set_tool(Tool::Eraser);
+        e.set_size(12.0);
+        draw_line(&mut e, (10.0, 15.0), (20.0, 15.0), 1.0);
+
+        let refs: Vec<_> = e.committed_strokes().collect();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs.len(), e.committed_strokes().len(), "ExactSizeIterator");
+        assert_eq!(refs[0].stroke.tool, Tool::Pen);
+        assert_eq!(refs[1].stroke.tool, Tool::Eraser);
+        // The brush recorded per stroke reflects the size active when drawn.
+        assert!((refs[0].brush.max_width - 8.0).abs() < 1e-9);
+        assert!((refs[1].brush.max_width - 12.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn current_stroke_accessor_reflects_in_progress_stroke() {
+        let mut e = Engine::new(30, 30);
+        e.set_size(9.0);
+        assert!(e.current_stroke().is_none(), "nothing in progress yet");
+
+        e.push_pointer(down(5.0, 5.0, 0.4));
+        let cur = e.current_stroke().expect("stroke in progress");
+        assert_eq!(cur.stroke.points.len(), 1);
+        assert!((cur.brush.max_width - 9.0).abs() < 1e-9);
+
+        e.push_pointer(up(15.0, 5.0, 0.4));
+        assert!(
+            e.current_stroke().is_none(),
+            "committed, nothing in progress"
+        );
     }
 }

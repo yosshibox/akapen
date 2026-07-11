@@ -15,14 +15,35 @@ final class AppState: ObservableObject {
     @Published var siblings: [URL] = []
     @Published var tool: AkapenTool = .pen
     @Published var brushSize: Double = 14
-    @Published var color: Color = .red
+    @Published var color: Color = AkapenPalette.defaultColor.color
+    /// 右側パレットで選択中のスウォッチ(ハイライト表示用)。ColorPicker などで
+    /// パレット外の色を選んだ場合は nil になる。
+    @Published var selectedColorHex: String? = AkapenPalette.defaultColor.hex
     @Published var pressureCurve: AkapenPressureCurve = .normal
     /// Raised when the core reports a constant-pressure stroke (spec §5.4).
     @Published var pressureWarning = false
     @Published var statusText = "Open an image to begin."
 
+    /// このフレームに未保存の描き込み(完了ストローク)があるか。フレーム切替時の
+    /// 自動保存(§4.5)の判定に使う。C ABI はストローク数を公開しないため、シェル側で
+    /// ストローク完了(pointer .up)を数えて追跡する。open / save でクリアされる。
+    private(set) var hasUnsavedStrokes = false
+
     /// Bumped whenever the composited image changes, so the canvas redraws.
     @Published var revision = 0
+
+    /// Whether to attempt the GPU (wgpu/Metal) render path (spec §7.4-6,
+    /// Phase e). Default true; disabled by the `AKAPEN_NO_GPU` environment
+    /// variable or a `--no-gpu` launch argument, for A/B testing and as an
+    /// escape hatch. When attach fails at runtime, the canvas falls back to the
+    /// CPU composite path regardless of this flag.
+    let useGPU: Bool = {
+        if ProcessInfo.processInfo.arguments.contains("--no-gpu") { return false }
+        if let v = ProcessInfo.processInfo.environment["AKAPEN_NO_GPU"], !v.isEmpty, v != "0" {
+            return false
+        }
+        return true
+    }()
 
     let supportedExts: Set<String> = ["png", "jpg", "jpeg", "webp", "bmp"]
 
@@ -36,6 +57,7 @@ final class AppState: ObservableObject {
         applyToolState()
         loadSiblings(of: url)
         pressureWarning = false
+        hasUnsavedStrokes = false
         let (w, h) = e.size
         statusText = "\(url.lastPathComponent) — \(w)×\(h)"
         revision += 1
@@ -64,6 +86,7 @@ final class AppState: ObservableObject {
         e.pointer(x: imageX, y: imageY, pressure: pressure, kind: kind, phase: phase)
         if phase == .up {
             pressureWarning = e.pressureStuck
+            hasUnsavedStrokes = true // 1ストローク完了 = このフレームは要保存
         }
         revision += 1
     }
@@ -71,15 +94,34 @@ final class AppState: ObservableObject {
     func undo() { engine?.undo(); revision += 1 }
     func redo() { engine?.redo(); revision += 1 }
 
+    /// 右側パレットのスウォッチをタップしたときの選択(spec 2026-07-11)。
+    func selectColor(hex: String) {
+        color = Color(hex: hex)
+        selectedColorHex = hex
+        applyToolState()
+    }
+
+    /// ツールバーの ColorPicker などパレット外から任意色が選ばれたときの選択。
+    /// パレットのハイライトは外す。
+    func setArbitraryColor(_ c: Color) {
+        color = c
+        selectedColorHex = nil
+        applyToolState()
+    }
+
     /// Saves the 3-file export into `<input folder>/_review/` (spec §4.3).
-    func save() {
-        guard let e = engine, let url = currentURL else { return }
+    @discardableResult
+    func save() -> Bool {
+        guard let e = engine, let url = currentURL else { return false }
         let dir = url.deletingLastPathComponent().appendingPathComponent("_review")
         let stem = url.deletingPathExtension().lastPathComponent
         if e.export(toDir: dir.path, stem: stem) {
+            hasUnsavedStrokes = false
             statusText = "Saved review for \(url.lastPathComponent) → _review/"
+            return true
         } else {
             statusText = "Save failed."
+            return false
         }
     }
 
@@ -90,6 +132,11 @@ final class AppState: ObservableObject {
         guard siblings.indices.contains(next) else {
             statusText = forward ? "Already at the last frame." : "Already at the first frame."
             return
+        }
+        // フレームを切り替えるときは、描き込みがあれば自動保存してから移動する
+        // (§4.5: 確認ダイアログではなく自動保存。非ダーティ時は空ファイルを作らない)。
+        if hasUnsavedStrokes {
+            save() // 既存の _review/ 命名・衝突回避(-2,-3)経路をそのまま使う
         }
         open(url: siblings[next])
     }

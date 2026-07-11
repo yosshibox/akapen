@@ -4,6 +4,7 @@ members = [
     "crates/akapen-core",
     "crates/akapen-io",
     "crates/akapen-ffi",
+    "crates/akapen-render",
 ]
 
 [workspace.package]

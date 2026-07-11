@@ -20,12 +20,15 @@ struct CanvasView: NSViewRepresentable {
     func makeNSView(context: Context) -> CanvasNSView {
         let v = CanvasNSView()
         v.state = state
+        v.useGPU = state.useGPU
         return v
     }
 
     func updateNSView(_ nsView: CanvasNSView, context: Context) {
         nsView.state = state
-        // Re-read the composite whenever the revision changes.
+        nsView.useGPU = state.useGPU
+        // Re-read the composite (CPU) or redraw the frame (GPU) whenever the
+        // revision changes.
         nsView.refresh()
     }
 }
@@ -39,8 +42,22 @@ final class CanvasNSView: NSView {
     private var rotationDeg: CGFloat = 0
     private var fittedOnce = false
 
+    // CPU path cache (unchanged): the composited NSImage drawn in draw(_:).
     private var cachedImage: NSImage?
+    // Natural (image-native) size, tracked separately from `cachedImage` so the
+    // GPU path — which never builds the CPU composite — can still map pointer
+    // coordinates and fit-to-window. Equals `cachedImage.size` on the CPU path.
+    private var imageSize: CGSize?
     private var lastRevision = -1
+
+    // MARK: GPU path (spec §7.4-6, Phase e). Inert unless `useGPU` and attach
+    // succeeds. When active, a MetalHostView child renders over this view; the
+    // CPU draw(_:) path below is left completely untouched as the fallback.
+    var useGPU = false
+    private var metalHost: MetalHostView?
+    private var gpuActive = false
+    private weak var attachedEngine: AkapenEngine?
+    private var lastPhysicalSize: CGSize = .zero
 
     // Space held → pan mode (spec §3 CSP: Space-drag pans).
     private var spaceDown = false
@@ -51,21 +68,42 @@ final class CanvasNSView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         window?.acceptsMouseMovedEvents = true
+        if window == nil {
+            teardownGPU()
+        } else {
+            ensureGPU()
+            renderGPU()
+        }
     }
 
     func refresh() {
         guard let state else { return }
-        if state.revision != lastRevision {
+        guard state.revision != lastRevision else { return }
+        lastRevision = state.revision
+
+        if let e = state.engine {
+            let (w, h) = e.size
+            imageSize = CGSize(width: w, height: h)
+        } else {
+            imageSize = nil
+        }
+
+        ensureGPU()
+        if gpuActive {
+            // GPU path: no CPU composite needed; render the frame directly.
+            fitIfNeeded()
+            renderGPU()
+        } else {
+            // CPU fallback (unchanged).
             cachedImage = state.compositeNSImage()
-            lastRevision = state.revision
             fitIfNeeded()
             needsDisplay = true
         }
     }
 
     private func fitIfNeeded() {
-        guard let img = cachedImage, !fittedOnce, bounds.width > 0 else { return }
-        let s = min(bounds.width / img.size.width, bounds.height / img.size.height)
+        guard let sz = imageSize, !fittedOnce, bounds.width > 0 else { return }
+        let s = min(bounds.width / sz.width, bounds.height / sz.height)
         zoom = s > 0 ? s : 1
         pan = .zero
         rotationDeg = 0
@@ -77,6 +115,106 @@ final class CanvasNSView: NSView {
         fittedOnce = false
         fitIfNeeded()
         needsDisplay = true
+        renderGPU()
+    }
+
+    // MARK: GPU lifecycle
+
+    /// Attaches (or re-attaches, when the engine changed) the GPU surface. A
+    /// no-op when GPU is disabled, no engine/window/bounds are available yet,
+    /// or the surface is already attached to the current engine. On attach
+    /// failure this leaves `gpuActive == false`, so the CPU path takes over.
+    private func ensureGPU() {
+        guard useGPU, let engine = state?.engine, window != nil,
+              bounds.width > 1, bounds.height > 1 else { return }
+        if gpuActive, attachedEngine === engine { return }
+        // Engine changed (new image opened) — drop the old surface first.
+        if gpuActive { teardownGPU() }
+
+        let host = MetalHostView(frame: bounds)
+        host.autoresizingMask = [.width, .height]
+        addSubview(host)
+        host.wantsLayer = true
+        host.layoutSubtreeIfNeeded()
+        let scale = window?.backingScaleFactor ?? 2.0
+        host.layer?.contentsScale = scale
+
+        let physW = UInt32(max(1, bounds.width * scale))
+        let physH = UInt32(max(1, bounds.height * scale))
+        let ok = engine.attachRender(
+            nsView: host.nsViewPointer, width: physW, height: physH, scale: Float(scale))
+        if ok {
+            metalHost = host
+            gpuActive = true
+            attachedEngine = engine
+            lastPhysicalSize = CGSize(width: CGFloat(physW), height: CGFloat(physH))
+        } else {
+            host.removeFromSuperview()
+            gpuActive = false
+            attachedEngine = nil
+        }
+    }
+
+    private func teardownGPU() {
+        if gpuActive {
+            // Detach the engine we attached to (weak: nil if it already freed
+            // itself, in which case its GPU surface was released on free).
+            attachedEngine?.detachRender()
+            metalHost?.removeFromSuperview()
+            metalHost = nil
+            gpuActive = false
+            lastPhysicalSize = .zero
+        }
+        attachedEngine = nil
+    }
+
+    /// Reconfigures the swapchain when the physical (backing-scaled) size
+    /// changed, then redraws.
+    private func updateGPUSurfaceSizeIfNeeded() {
+        guard gpuActive, let engine = state?.engine else { return }
+        let scale = window?.backingScaleFactor ?? 2.0
+        metalHost?.layer?.contentsScale = scale
+        let physW = UInt32(max(1, bounds.width * scale))
+        let physH = UInt32(max(1, bounds.height * scale))
+        let sz = CGSize(width: CGFloat(physW), height: CGFloat(physH))
+        guard sz != lastPhysicalSize else { return }
+        engine.resizeRender(width: physW, height: physH, scale: Float(scale))
+        lastPhysicalSize = sz
+        renderGPU()
+    }
+
+    /// Draws one GPU frame using the current zoom/pan/rotation, converted to
+    /// the core's physical-pixel view transform. No-op unless GPU is active.
+    private func renderGPU() {
+        guard gpuActive, let engine = state?.engine, imageSize != nil else { return }
+        let scale = window?.backingScaleFactor ?? (metalHost?.layer?.contentsScale ?? 2.0)
+        // Image center maps to (bounds center + pan) in points; ×scale → pixels.
+        let cx = (bounds.midX + pan.width) * scale
+        let cy = (bounds.midY + pan.height) * scale
+        let view = AkapenEngine.ViewTransform(
+            centerX: Float(cx),
+            centerY: Float(cy),
+            scale: Float(zoom * scale),
+            rotationDeg: Float(rotationDeg))
+        engine.renderFrame(view)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        ensureGPU()
+        updateGPUSurfaceSizeIfNeeded()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateGPUSurfaceSizeIfNeeded()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil {
+            teardownGPU()
+        }
     }
 
     // MARK: drawing
@@ -103,7 +241,11 @@ final class CanvasNSView: NSView {
     // MARK: coordinate mapping (view point → image-native pixel)
 
     private func imagePoint(from viewPoint: CGPoint) -> CGPoint? {
-        guard let img = cachedImage else { return nil }
+        // Uses `imageSize` (populated from the engine) rather than the CPU
+        // `cachedImage`, so pointer mapping works identically on the GPU path
+        // (which never builds the CPU composite). On the CPU path the two are
+        // always equal, so this is behavior-preserving.
+        guard let sz = imageSize else { return nil }
         let cx = bounds.midX + pan.width
         let cy = bounds.midY + pan.height
         var dx = viewPoint.x - cx
@@ -114,7 +256,7 @@ final class CanvasNSView: NSView {
         let ry = dx * sin(rad) + dy * cos(rad)
         dx = rx / zoom
         dy = ry / zoom
-        return CGPoint(x: img.size.width / 2 + dx, y: img.size.height / 2 + dy)
+        return CGPoint(x: sz.width / 2 + dx, y: sz.height / 2 + dy)
     }
 
     // MARK: input
@@ -147,6 +289,7 @@ final class CanvasNSView: NSView {
             pan.width += event.deltaX
             pan.height += event.deltaY
             needsDisplay = true
+            renderGPU()
             return
         }
         send(event, phase: .move)
@@ -167,11 +310,13 @@ final class CanvasNSView: NSView {
             pan.height += event.scrollingDeltaY
         }
         needsDisplay = true
+        renderGPU()
     }
 
     override func magnify(with event: NSEvent) {
         zoom = max(0.02, min(20, zoom * (1 + event.magnification)))
         needsDisplay = true
+        renderGPU()
     }
 
     override func keyDown(with event: NSEvent) {
@@ -189,5 +334,26 @@ final class CanvasNSView: NSView {
     func rotate(by deg: CGFloat) {
         rotationDeg += deg
         needsDisplay = true
+        renderGPU()
+    }
+}
+
+/// A thin layer-backed child view that hosts the wgpu-managed `CAMetalLayer`
+/// (spec §7.4-6, Phase e). It is added over `CanvasNSView` only while the GPU
+/// path is active, keeping `CanvasNSView` itself an ordinary layer-backed view
+/// whose CPU `draw(_:)` fallback is never disturbed. Do NOT override
+/// `makeBackingLayer` here: `raw-window-metal` (inside libakapen) sets
+/// `wantsLayer` and inserts/manages its own `CAMetalLayer` sublayer on attach.
+/// It is transparent to hit-testing so pointer events still reach the canvas.
+final class MetalHostView: NSView {
+    override var isFlipped: Bool { true }
+
+    /// Pointer events must fall through to the underlying `CanvasNSView`.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    /// The `NSView*` to hand to `akapen_render_attach` (wgpu's AppKit surface
+    /// path expects the view pointer, not a layer).
+    var nsViewPointer: UnsafeMutableRawPointer {
+        Unmanaged.passUnretained(self).toOpaque()
     }
 }

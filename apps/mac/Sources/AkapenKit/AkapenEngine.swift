@@ -119,4 +119,72 @@ public final class AkapenEngine {
             }
         }
     }
+
+    // MARK: - GPU surface path (spec §7.4-6, Phase e)
+    //
+    // Optional and additive: the CPU composite path above works with or without
+    // a GPU surface attached. All of these must be called from the same (main)
+    // thread that attached the surface, since attaching wires a CAMetalLayer
+    // into the given NSView.
+
+    /// The on-screen view transform for one GPU frame, in physical pixels.
+    /// `scale` is the shell's zoom multiplied by the backing scale (uniform);
+    /// `center` is the displayed image center in physical pixels.
+    public struct ViewTransform {
+        public var centerX: Float
+        public var centerY: Float
+        public var scale: Float
+        public var rotationDeg: Float
+        public init(centerX: Float, centerY: Float, scale: Float, rotationDeg: Float) {
+            self.centerX = centerX
+            self.centerY = centerY
+            self.scale = scale
+            self.rotationDeg = rotationDeg
+        }
+    }
+
+    /// Attaches a GPU render surface backed by the given `NSView` pointer
+    /// (`AKAPEN_SURFACE_METAL_LAYER`: the pointer must be the `NSView*`, not a
+    /// layer — wgpu inserts and manages its own `CAMetalLayer` sublayer).
+    /// Returns `true` on success; on `false` the caller must keep using the CPU
+    /// composite path. `width`/`height` are physical pixels.
+    @discardableResult
+    public func attachRender(
+        nsView: UnsafeMutableRawPointer, width: UInt32, height: UInt32, scale: Float
+    ) -> Bool {
+        var desc = AkapenSurfaceDesc(
+            kind: Int32(AKAPEN_SURFACE_METAL_LAYER),
+            handle: nsView,
+            display: nil,
+            width: width,
+            height: height,
+            scale_factor: scale)
+        return withUnsafePointer(to: &desc) { akapen_render_attach(handle, $0) } == 0
+    }
+
+    /// Re-configures the attached surface for a new physical pixel size /
+    /// backing scale. No-op if nothing is attached.
+    public func resizeRender(width: UInt32, height: UInt32, scale: Float) {
+        akapen_render_resize(handle, width, height, scale)
+    }
+
+    /// Draws and presents one GPU frame through `view`. No-op if not attached.
+    public func renderFrame(_ view: ViewTransform) {
+        let vt = AkapenViewTransform(
+            center_x: view.centerX,
+            center_y: view.centerY,
+            scale: view.scale,
+            rotation_deg: view.rotationDeg)
+        akapen_render_frame(handle, vt)
+    }
+
+    /// Detaches and tears down the GPU surface. Safe when nothing is attached.
+    public func detachRender() {
+        akapen_render_detach(handle)
+    }
+
+    /// True while a GPU surface is attached (GPU path active).
+    public var renderAvailable: Bool {
+        akapen_render_available(handle) != 0
+    }
 }

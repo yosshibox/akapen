@@ -19,18 +19,105 @@
 //! `include/akapen.h`, so the per-fn `# Safety` lint is allowed crate-wide.
 #![allow(clippy::missing_safety_doc)]
 
-use akapen_core::engine::{Phase, PointerSample};
+use akapen_core::coord::ViewTransform;
+use akapen_core::engine::{BakeDelta, Phase, PointerSample};
 use akapen_core::stroke::PointerKind;
 use akapen_core::{Engine, PressureCurve, Tool};
 use akapen_io::decode::decode_rgba;
 use akapen_io::output::{resolve_target, OutputNaming};
-use std::ffi::CStr;
+use akapen_render::{GpuCanvas, SurfaceDesc, SurfaceKind};
+use std::ffi::{c_void, CStr};
 use std::os::raw::{c_char, c_int};
 use std::path::Path;
 
 /// Opaque engine handle.
+///
+/// `inner` is the UI-agnostic drawing engine (unchanged since M1). Phase e
+/// adds two GPU-path fields that are inert until [`akapen_render_attach`] is
+/// called:
+/// - `gpu`: the attached [`GpuCanvas`], or `None` on the CPU-only path.
+/// - `pending`: committed-stroke changes ([`BakeDelta`]) reported by
+///   `push_pointer`/`undo`/`redo` but not yet baked into the GPU's offscreen
+///   texture; consumed (and reset) by each [`akapen_render_frame`]. Inert on
+///   the CPU path — the CPU composite (`akapen_composite_rgba`) never reads it.
 pub struct AkapenEngine {
     inner: Engine,
+    gpu: Option<GpuCanvas>,
+    pending: BakeDelta,
+}
+
+/// Folds a newly-reported [`BakeDelta`] into the accumulated one held between
+/// GPU frames. `None` is the identity (an ignored sample changes nothing); the
+/// first real change is kept verbatim so a single commit between frames stays
+/// a cheap `Append`; any *second* real change before the next frame escalates
+/// to `Rebuild`, which safely redraws the whole committed history rather than
+/// risk dropping a stroke a lone `Append` (which only bakes the last committed
+/// stroke) would miss. `Rebuild` therefore always wins — it is a correct
+/// superset of any pending change.
+fn accumulate_bake_delta(acc: BakeDelta, new: BakeDelta) -> BakeDelta {
+    match (acc, new) {
+        (acc, BakeDelta::None) => acc,
+        (BakeDelta::None, new) => new,
+        // Two real changes coalesced before a frame: redraw everything.
+        _ => BakeDelta::Rebuild,
+    }
+}
+
+/// Maps the C ABI `kind` code to the render crate's [`SurfaceKind`]. Mirrors
+/// the numbering documented in `include/akapen.h`
+/// (`MetalLayer=0, Hwnd=1, SwapChainPanel=2`).
+fn surface_kind_from_code(kind: i32) -> Option<SurfaceKind> {
+    match kind {
+        0 => Some(SurfaceKind::MetalLayer),
+        1 => Some(SurfaceKind::Hwnd),
+        2 => Some(SurfaceKind::SwapChainPanel),
+        _ => None,
+    }
+}
+
+/// A native drawing surface, described in the OS-neutral shape the render
+/// crate's [`SurfaceDesc`] expects (spec §7.4-6). `kind` selects how `handle`
+/// is interpreted: `0 = MetalLayer` (mac: `handle` is the `NSView*`, not the
+/// layer), `1 = Hwnd` (Windows), `2 = SwapChainPanel` (WinUI 3; not yet
+/// wired). `scale_factor` is the backing-store scale (e.g. 2.0 on Retina).
+#[repr(C)]
+pub struct AkapenSurfaceDesc {
+    pub kind: i32,
+    pub handle: *mut c_void,
+    pub display: *mut c_void,
+    pub width: u32,
+    pub height: u32,
+    pub scale_factor: f32,
+}
+
+/// The on-screen view transform (zoom/pan/rotation) for a rendered frame, in
+/// **surface physical pixels**. A single uniform `scale` (the shell's zoom ×
+/// backing scale) is expanded to the core's per-axis `scale_x`/`scale_y`;
+/// `center_x`/`center_y` are the displayed image center in physical pixels;
+/// `rotation_deg` is clockwise degrees. The image's own size (`buffer_w/h`)
+/// is filled in from the attached canvas, not carried here.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AkapenViewTransform {
+    pub center_x: f32,
+    pub center_y: f32,
+    pub scale: f32,
+    pub rotation_deg: f32,
+}
+
+/// Expands an [`AkapenViewTransform`] (single `scale`, physical pixels) plus
+/// the attached image's natural size into the core's [`ViewTransform`]
+/// (per-axis scale, explicit `buffer_w/h`). Pure — unit-tested without a GPU.
+fn to_view_transform(vt: AkapenViewTransform, buffer_w: u32, buffer_h: u32) -> ViewTransform {
+    ViewTransform {
+        center_x: vt.center_x as f64,
+        center_y: vt.center_y as f64,
+        scale_x: vt.scale as f64,
+        scale_y: vt.scale as f64,
+        rotation_deg: vt.rotation_deg as f64,
+        buffer_w: buffer_w as f64,
+        buffer_h: buffer_h as f64,
+    }
 }
 
 #[inline]
@@ -61,7 +148,11 @@ pub unsafe extern "C" fn akapen_open_image(path: *const c_char) -> *mut AkapenEn
     match decode_rgba(path) {
         Ok(img) => {
             let engine = Engine::from_rgba(img.rgba, img.width, img.height);
-            Box::into_raw(Box::new(AkapenEngine { inner: engine }))
+            Box::into_raw(Box::new(AkapenEngine {
+                inner: engine,
+                gpu: None,
+                pending: BakeDelta::None,
+            }))
         }
         Err(_) => std::ptr::null_mut(),
     }
@@ -75,6 +166,8 @@ pub extern "C" fn akapen_new(width: u32, height: u32) -> *mut AkapenEngine {
     }
     Box::into_raw(Box::new(AkapenEngine {
         inner: Engine::new(width, height),
+        gpu: None,
+        pending: BakeDelta::None,
     }))
 }
 
@@ -177,13 +270,17 @@ pub unsafe extern "C" fn akapen_pointer(
             2 => Phase::Up,
             _ => Phase::Move,
         };
-        e.inner.push_pointer(PointerSample {
+        let delta = e.inner.push_pointer(PointerSample {
             x,
             y,
             pressure,
             kind,
             phase,
         });
+        // Record the committed-stroke change for the next GPU frame to bake.
+        // Purely additive: the CPU composite path ignores `pending`, so this
+        // does not change any observable behavior of `akapen_pointer` itself.
+        e.pending = accumulate_bake_delta(e.pending, delta);
     }
 }
 
@@ -191,14 +288,16 @@ pub unsafe extern "C" fn akapen_pointer(
 #[no_mangle]
 pub unsafe extern "C" fn akapen_undo(engine: *mut AkapenEngine) {
     if let Some(e) = as_engine(engine) {
-        e.inner.undo();
+        let delta = e.inner.undo();
+        e.pending = accumulate_bake_delta(e.pending, delta);
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn akapen_redo(engine: *mut AkapenEngine) {
     if let Some(e) = as_engine(engine) {
-        e.inner.redo();
+        let delta = e.inner.redo();
+        e.pending = accumulate_bake_delta(e.pending, delta);
     }
 }
 
@@ -271,6 +370,146 @@ pub unsafe extern "C" fn akapen_export_to_dir(
     0
 }
 
+// ── Phase e: GPU surface path (spec §7.4-6) ──────────────────────────────
+//
+// These are additive and independent of the CPU path: `akapen_composite_rgba`
+// / `akapen_export_to_dir` keep working identically whether or not a GPU
+// surface is attached. All wgpu / CAMetalLayer work must be driven from a
+// single thread (the shell's main thread) — an `AkapenEngine` handle is not
+// thread-safe (see `include/akapen.h`).
+
+/// Attaches a GPU render surface to the engine, seeding it with the current
+/// background and committed strokes. Returns 0 on success, non-zero on
+/// failure (the caller must then fall back to the CPU composite path):
+/// - `1`: null engine handle.
+/// - `2`: null `desc` pointer.
+/// - `3`: unknown `desc->kind` value.
+/// - `4`: surface / adapter / device bring-up failed (e.g. no GPU, or an
+///   unsupported surface kind such as `SwapChainPanel`).
+///
+/// # Safety
+/// `desc` must be a valid pointer to an `AkapenSurfaceDesc` whose `handle`
+/// (and `display`, if non-null) are valid native handles for `kind`, live for
+/// as long as the surface stays attached, and are used only from this thread.
+#[no_mangle]
+pub unsafe extern "C" fn akapen_render_attach(
+    engine: *mut AkapenEngine,
+    desc: *const AkapenSurfaceDesc,
+) -> c_int {
+    let Some(e) = as_engine(engine) else {
+        return 1;
+    };
+    if desc.is_null() {
+        return 2;
+    }
+    let desc = &*desc;
+    let Some(kind) = surface_kind_from_code(desc.kind) else {
+        return 3;
+    };
+
+    let render_desc = SurfaceDesc {
+        kind,
+        handle: desc.handle,
+        display: desc.display,
+        width: desc.width,
+        height: desc.height,
+        // The render crate's SurfaceDesc carries scale_factor as f64.
+        scale_factor: desc.scale_factor as f64,
+    };
+
+    let bg = e.inner.background();
+    let (bw, bh) = (bg.width, bg.height);
+    // SAFETY: the caller's handle contract is forwarded to GpuCanvas::attach
+    // (which forwards it to surface::create).
+    let result = GpuCanvas::attach(render_desc, &bg.data, bw, bh, e.inner.committed_strokes());
+    match result {
+        Ok(canvas) => {
+            e.gpu = Some(canvas);
+            // The freshly-attached canvas already baked the whole committed
+            // history, so there is nothing pending to replay on the first frame.
+            e.pending = BakeDelta::None;
+            0
+        }
+        Err(_) => 4,
+    }
+}
+
+/// Re-configures the attached surface for a new pixel size (physical pixels)
+/// and backing scale. No-op if no surface is attached.
+///
+/// # Safety
+/// `engine` must be a valid handle (or null, which is ignored).
+#[no_mangle]
+pub unsafe extern "C" fn akapen_render_resize(
+    engine: *mut AkapenEngine,
+    width: u32,
+    height: u32,
+    scale: f32,
+) {
+    // `scale` is accepted for symmetry with attach and future use; the
+    // swapchain is configured purely from the physical pixel size here, and
+    // the per-frame view transform already carries the effective scale.
+    let _ = scale;
+    if let Some(e) = as_engine(engine) {
+        if let Some(gpu) = e.gpu.as_mut() {
+            gpu.resize(width, height);
+        }
+    }
+}
+
+/// Draws one on-screen frame through the given view transform. Bakes any
+/// committed-stroke changes accumulated since the last frame, composites
+/// (background → baked strokes → in-progress "wet" stroke), and presents.
+/// No-op if no surface is attached.
+///
+/// # Safety
+/// `engine` must be a valid handle (or null, which is ignored). Must be
+/// called on the same thread that attached the surface.
+#[no_mangle]
+pub unsafe extern "C" fn akapen_render_frame(engine: *mut AkapenEngine, view: AkapenViewTransform) {
+    let Some(e) = as_engine(engine) else {
+        return;
+    };
+    if e.gpu.is_none() {
+        return;
+    }
+    // Consume the accumulated bake delta (reset to None) before drawing, so a
+    // dropped/failed frame doesn't replay it forever.
+    let delta = std::mem::replace(&mut e.pending, BakeDelta::None);
+    let gpu = e.gpu.as_mut().expect("gpu present (checked above)");
+    let (bw, bh) = gpu.buffer_size();
+    let vt = to_view_transform(view, bw, bh);
+    // `e.gpu` and `e.inner` are disjoint fields, so these borrows don't alias.
+    gpu.apply_bake(delta, e.inner.committed_strokes());
+    gpu.render(e.inner.current_stroke(), &vt);
+}
+
+/// Detaches and tears down the GPU surface (releasing the swapchain and its
+/// CAMetalLayer retain). Safe to call when nothing is attached. The engine
+/// keeps working on the CPU path afterward.
+///
+/// # Safety
+/// `engine` must be a valid handle (or null, which is ignored).
+#[no_mangle]
+pub unsafe extern "C" fn akapen_render_detach(engine: *mut AkapenEngine) {
+    if let Some(e) = as_engine(engine) {
+        e.gpu = None;
+    }
+}
+
+/// Returns 1 if a GPU surface is currently attached (the GPU path is active),
+/// 0 otherwise (CPU-only, including a null handle).
+///
+/// # Safety
+/// `engine` must be a valid handle (or null, which returns 0).
+#[no_mangle]
+pub unsafe extern "C" fn akapen_render_available(engine: *mut AkapenEngine) -> c_int {
+    match as_engine(engine) {
+        Some(e) if e.gpu.is_some() => 1,
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,6 +558,130 @@ mod tests {
             akapen_free(std::ptr::null_mut());
             akapen_undo(std::ptr::null_mut());
             assert_eq!(akapen_pressure_stuck(std::ptr::null_mut()), 0);
+        }
+    }
+
+    // ── Phase e: pure-logic unit tests (no GPU) ──
+
+    #[test]
+    fn accumulate_bake_delta_none_is_identity() {
+        use BakeDelta::*;
+        assert_eq!(accumulate_bake_delta(None, None), None);
+        assert_eq!(accumulate_bake_delta(Append, None), Append);
+        assert_eq!(accumulate_bake_delta(Rebuild, None), Rebuild);
+        assert_eq!(accumulate_bake_delta(None, Append), Append);
+        assert_eq!(accumulate_bake_delta(None, Rebuild), Rebuild);
+    }
+
+    #[test]
+    fn accumulate_bake_delta_first_change_is_kept_verbatim() {
+        // A lone commit between frames stays a cheap Append (not escalated).
+        assert_eq!(
+            accumulate_bake_delta(BakeDelta::None, BakeDelta::Append),
+            BakeDelta::Append
+        );
+    }
+
+    #[test]
+    fn accumulate_bake_delta_second_change_escalates_to_rebuild() {
+        use BakeDelta::*;
+        // Two commits coalesced before a frame: a lone Append would only bake
+        // the last committed stroke, so we escalate to a full Rebuild.
+        assert_eq!(accumulate_bake_delta(Append, Append), Rebuild);
+        // Rebuild always wins, in either order.
+        assert_eq!(accumulate_bake_delta(Append, Rebuild), Rebuild);
+        assert_eq!(accumulate_bake_delta(Rebuild, Append), Rebuild);
+        assert_eq!(accumulate_bake_delta(Rebuild, Rebuild), Rebuild);
+    }
+
+    #[test]
+    fn accumulate_bake_delta_ordered_sequence_none_append_then_rebuild_wins() {
+        // Explicitly the case from the Phase e brief: None -> Append -> Rebuild
+        // must end at Rebuild.
+        let mut acc = BakeDelta::None;
+        acc = accumulate_bake_delta(acc, BakeDelta::None); // ignored sample
+        acc = accumulate_bake_delta(acc, BakeDelta::Append); // a commit
+        assert_eq!(acc, BakeDelta::Append);
+        acc = accumulate_bake_delta(acc, BakeDelta::Rebuild); // an undo
+        assert_eq!(acc, BakeDelta::Rebuild);
+    }
+
+    #[test]
+    fn view_transform_conversion_expands_scale_and_fills_buffer_size() {
+        let vt = AkapenViewTransform {
+            center_x: 320.5,
+            center_y: 180.25,
+            scale: 1.5,
+            rotation_deg: 12.0,
+        };
+        let out = to_view_transform(vt, 640, 360);
+        assert!((out.center_x - 320.5).abs() < 1e-4);
+        assert!((out.center_y - 180.25).abs() < 1e-4);
+        // Single uniform scale expands to both axes.
+        assert!((out.scale_x - 1.5).abs() < 1e-6);
+        assert!((out.scale_y - 1.5).abs() < 1e-6);
+        assert!((out.scale_x - out.scale_y).abs() < 1e-12);
+        assert!((out.rotation_deg - 12.0).abs() < 1e-4);
+        // Buffer size comes from the attached image, not the struct.
+        assert_eq!(out.buffer_w, 640.0);
+        assert_eq!(out.buffer_h, 360.0);
+    }
+
+    #[test]
+    fn render_functions_are_safe_with_null_handle() {
+        let view = AkapenViewTransform {
+            center_x: 0.0,
+            center_y: 0.0,
+            scale: 1.0,
+            rotation_deg: 0.0,
+        };
+        unsafe {
+            assert_eq!(
+                akapen_render_attach(std::ptr::null_mut(), std::ptr::null()),
+                1
+            );
+            akapen_render_resize(std::ptr::null_mut(), 10, 10, 2.0);
+            akapen_render_frame(std::ptr::null_mut(), view);
+            akapen_render_detach(std::ptr::null_mut());
+            assert_eq!(akapen_render_available(std::ptr::null_mut()), 0);
+        }
+    }
+
+    #[test]
+    fn attach_with_null_desc_returns_error_and_stays_on_cpu() {
+        let e = akapen_new(32, 32);
+        assert!(!e.is_null());
+        unsafe {
+            // Null desc: clean error, no crash, GPU not marked available.
+            assert_eq!(akapen_render_attach(e, std::ptr::null()), 2);
+            assert_eq!(akapen_render_available(e), 0);
+
+            // Unknown kind: also a clean error (code 3), still CPU-only.
+            let bad = AkapenSurfaceDesc {
+                kind: 99,
+                handle: std::ptr::null_mut(),
+                display: std::ptr::null_mut(),
+                width: 32,
+                height: 32,
+                scale_factor: 1.0,
+            };
+            assert_eq!(akapen_render_attach(e, &bad), 3);
+            assert_eq!(akapen_render_available(e), 0);
+
+            // The CPU composite path must still work while GPU is unattached.
+            let need = akapen_composite_rgba(e, std::ptr::null_mut(), 0);
+            assert_eq!(need, 32 * 32 * 4);
+
+            // A frame call with no surface attached is a harmless no-op.
+            let view = AkapenViewTransform {
+                center_x: 16.0,
+                center_y: 16.0,
+                scale: 1.0,
+                rotation_deg: 0.0,
+            };
+            akapen_render_frame(e, view);
+
+            akapen_free(e);
         }
     }
 }
