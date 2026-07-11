@@ -10,3 +10,7 @@ authors.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# PNG encode for the 3-file export (transparent strokes / flat). Chosen for
+# being the de-facto pure-Rust PNG codec with no C dependency (keeps the core
+# cross-compilable for the tri-face build discipline). Rationale in README.
+png = "0.17"
