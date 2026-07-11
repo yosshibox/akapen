@@ -1,0 +1,28 @@
+Akapen (赤ペン)
+Copyright (c) 2026 Akapen contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------
+Third-party components
+--------------------------------------------------------------------------
+
+Akapen depends on and/or bundles third-party components under their own
+licenses. Attributions and license texts are collected in
+THIRD-PARTY-LICENSES/. Notable planned/known items:
+
+- Rust crates (serde, serde_json, and future image/GPU crates): MIT / Apache-2.0.
+- HEIC/HEIF fallback decoder (libheif family, planned): LGPL and related.
+  Bundled via dynamic linking / separate bundle so the Apache-2.0 core is not
+  encumbered (see docs spec §4.2).
+- Bundled ffmpeg CLI (planned, video-frame extraction): LGPL-2.1+ build,
+  invoked as a separate process, licensed separately from the Apache-2.0 core
+  (see docs spec §4.6).
+
+--------------------------------------------------------------------------
+Trademark / non-affiliation notice
+--------------------------------------------------------------------------
+
+CLIP STUDIO PAINT is a registered trademark of CELSYS, Inc. This project is
+not affiliated with, endorsed by, or sponsored by CELSYS. References to CLIP
+STUDIO PAINT shortcut compatibility are nominative (descriptive) use only.
