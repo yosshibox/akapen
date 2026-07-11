@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn swap_chain_panel_is_reported_unsupported_not_silently_ignored() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = crate::instance::create_instance();
         let desc = SurfaceDesc {
             kind: SurfaceKind::SwapChainPanel,
             handle: core::ptr::null_mut(),
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn null_metal_layer_handle_is_a_clean_error_not_a_panic() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = crate::instance::create_instance();
         let desc = SurfaceDesc {
             kind: SurfaceKind::MetalLayer,
             handle: core::ptr::null_mut(),

@@ -62,7 +62,7 @@ impl SurfaceRenderer {
         let width = desc.width.max(1);
         let height = desc.height.max(1);
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = crate::instance::create_instance();
         // SAFETY: forwarded to this function's caller (see doc comment).
         let surface = unsafe { surface::create(&instance, desc)? };
 

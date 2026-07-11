@@ -16,11 +16,17 @@
 //! - Phase d: the offscreen committed-stroke bake texture and per-frame
 //!   composite ([`bake`]) — background → `baked_tex` → wet ink, O(1) per
 //!   frame in stroke count.
+//!
+//! `wgpu::Instance` construction is centralized in the internal `instance`
+//! module (see its doc comment) rather than repeated at each call site,
+//! because on Windows the platform default must differ from every other
+//! platform to route around a crashing Vulkan ICD.
 
 pub mod background;
 pub mod bake;
 pub mod canvas;
 pub mod error;
+pub(crate) mod instance;
 pub mod renderer;
 pub mod stroke;
 pub mod surface;

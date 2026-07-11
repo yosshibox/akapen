@@ -69,7 +69,7 @@ impl Renderer {
     /// compatible with it; that entry point lands with the Windows/mac FFI
     /// wiring (Phase e) once there is a real window handle to test against.
     pub async fn new_headless() -> Result<Self, RendererError> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = crate::instance::create_instance();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
