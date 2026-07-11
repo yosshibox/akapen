@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/akapen-core",
     "crates/akapen-io",
+    "crates/akapen-ffi",
 ]
 
 [workspace.package]

@@ -1,0 +1,20 @@
+[package]
+name = "akapen-ffi"
+description = "Akapen C ABI: the minimal-common-denominator surface every language binding wraps (spec §7.2)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "akapen"
+# staticlib for the mac SwiftUI shell (linked into the app bundle); cdylib for
+# dynamic consumers. The C ABI is hand-written (spec §7.4 allows cbindgen or
+# hand-written extern "C"); a checked-in header keeps the surface reviewable
+# without adding a build-time codegen dependency.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+akapen-core = { path = "../akapen-core" }
+akapen-io = { path = "../akapen-io" }
