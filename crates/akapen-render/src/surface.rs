@@ -32,14 +32,24 @@ pub enum SurfaceKind {
     /// handle usable directly with `raw_window_handle::Win32WindowHandle`.
     Hwnd,
     /// WinUI 3 (Windows App SDK) `SwapChainPanel`. **Not** a standard wgpu
-    /// `Surface` target: a `SwapChainPanel` has no HWND of its own and is
-    /// attached via `ISwapChainPanelNative::SetSwapChain` on a DXGI swap
-    /// chain created directly against the D3D12 device — a different
-    /// attach mechanism than `raw_window_handle`'s window/display handles.
-    /// [`create`] returns [`RendererError::UnsupportedSurfaceKind`] for this
-    /// kind; wiring it is left to the Windows FFI milestone (Phase e), which
-    /// will need to reach into `wgpu-hal`'s D3D12 device rather than go
-    /// through `wgpu::Surface`.
+    /// `Surface` target reachable through `raw_window_handle`: a
+    /// `SwapChainPanel` has no HWND of its own. Unlike the original Phase e
+    /// assumption (see the superseded wording below, kept for history),
+    /// wgpu 30 exposes this directly as a public, `cfg(dx12)`-gated
+    /// `wgpu::SurfaceTargetUnsafe::SwapChainPanel(*mut c_void)` variant
+    /// (confirmed against the vendored `wgpu-30.0.0`/`wgpu-hal-30.0.0`
+    /// source and the C 節 reconnaissance in `docs/開発日誌.md`): passing it
+    /// to `Instance::create_surface_unsafe` internally does
+    /// `IDXGIFactory2::CreateSwapChainForComposition` followed by
+    /// `ISwapChainPanelNative::SetSwapChain`. No new dependency on
+    /// `wgpu-hal`/`wgpu-core` (or reaching for a raw `ID3D12Device`) is
+    /// needed. [`create`] therefore forwards `desc.handle` — which the
+    /// caller must have already `QueryInterface`'d from the XAML
+    /// `SwapChainPanel` object to `ISwapChainPanelNative`
+    /// (`microsoft.ui.xaml.media.dxinterop.h`) — straight to that variant on
+    /// Windows; on non-Windows targets (where `cfg(dx12)` never holds) this
+    /// arm still returns [`RendererError::UnsupportedSurfaceKind`], keeping
+    /// mac/Linux behavior byte-for-byte unchanged.
     SwapChainPanel,
 }
 
@@ -80,6 +90,13 @@ pub unsafe fn create(
     instance: &wgpu::Instance,
     desc: SurfaceDesc,
 ) -> Result<wgpu::Surface<'static>, RendererError> {
+    // SwapChainPanel does not go through `raw_window_handle` at all (it has
+    // no HWND) -- it uses wgpu's own `SurfaceTargetUnsafe::SwapChainPanel`
+    // variant directly, so it is handled up front and returns early.
+    if desc.kind == SurfaceKind::SwapChainPanel {
+        return create_swap_chain_panel(instance, desc);
+    }
+
     let raw_window_handle = match desc.kind {
         SurfaceKind::MetalLayer => {
             let ns_view = NonNull::new(desc.handle)
@@ -92,12 +109,7 @@ pub unsafe fn create(
             )?;
             RawWindowHandle::Win32(raw_window_handle::Win32WindowHandle::new(hwnd))
         }
-        SurfaceKind::SwapChainPanel => {
-            return Err(RendererError::UnsupportedSurfaceKind(
-                "SwapChainPanel has no HWND; attach via ISwapChainPanelNative on a \
-                 D3D12-native DXGI swap chain instead of wgpu::Surface (Phase e)",
-            ));
-        }
+        SurfaceKind::SwapChainPanel => unreachable!("returned above"),
     };
 
     let raw_display_handle = match desc.kind {
@@ -121,6 +133,50 @@ pub unsafe fn create(
     }
 }
 
+/// Windows-only path for [`SurfaceKind::SwapChainPanel`] (see its doc
+/// comment for the wgpu API this rests on). Split out of [`create`] so the
+/// `#[cfg(...)]` gate on the actual `wgpu::SurfaceTargetUnsafe::SwapChainPanel`
+/// call stays localized to one small function.
+///
+/// # Safety
+/// Same contract as [`create`]: `desc.handle` must be a valid, non-null
+/// `ISwapChainPanelNative*` for the lifetime of the returned `Surface`.
+#[cfg(target_os = "windows")]
+unsafe fn create_swap_chain_panel(
+    instance: &wgpu::Instance,
+    desc: SurfaceDesc,
+) -> Result<wgpu::Surface<'static>, RendererError> {
+    if desc.handle.is_null() {
+        return Err(RendererError::UnsupportedSurfaceKind(
+            "null ISwapChainPanelNative handle",
+        ));
+    }
+    // SAFETY: forwarded to the caller of `create` (see its doc comment); the
+    // non-null check above only rules out the one precondition this function
+    // can check itself.
+    unsafe {
+        instance
+            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::SwapChainPanel(desc.handle))
+            .map_err(RendererError::CreateSurface)
+    }
+}
+
+/// Non-Windows (or dx12-feature-disabled) fallback: `wgpu`'s
+/// `SwapChainPanel` variant only exists under `cfg(dx12)`
+/// (`all(target_os = "windows", feature = "dx12")` per wgpu 30's own
+/// build script), so on every other target this keeps returning the same
+/// explicit, non-silent error `create` always returned for this kind —
+/// mac/Linux behavior is byte-for-byte unchanged.
+#[cfg(not(target_os = "windows"))]
+unsafe fn create_swap_chain_panel(
+    _instance: &wgpu::Instance,
+    _desc: SurfaceDesc,
+) -> Result<wgpu::Surface<'static>, RendererError> {
+    Err(RendererError::UnsupportedSurfaceKind(
+        "SwapChainPanel requires Windows + the dx12 wgpu feature (both compiled out here)",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +196,38 @@ mod tests {
         // SwapChainPanel arm returns before touching it).
         let err = unsafe { create(&instance, desc) }.unwrap_err();
         assert!(matches!(err, RendererError::UnsupportedSurfaceKind(_)));
+    }
+
+    /// Windows-only: pins that a `SwapChainPanel` request now *reaches* the
+    /// DX12 `create_swap_chain_panel` branch (rather than the platform-
+    /// generic "not implemented" message the non-Windows fallback still
+    /// returns) — i.e. the wgpu-API wiring is live, not just a stub. Actually
+    /// presenting through a real `ISwapChainPanelNative` needs a WinUI/XAML
+    /// host (Session 1 GUI de-risk, tracked in `docs/開発日誌.md`), so this
+    /// only exercises the reachable-but-null-handle guard.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn swap_chain_panel_null_handle_is_rejected_by_the_dx12_branch_specifically() {
+        let instance = crate::instance::create_instance();
+        let desc = SurfaceDesc {
+            kind: SurfaceKind::SwapChainPanel,
+            handle: core::ptr::null_mut(),
+            display: core::ptr::null_mut(),
+            width: 100,
+            height: 100,
+            scale_factor: 1.0,
+        };
+        // SAFETY: handle is null and never dereferenced (rejected up front).
+        let err = unsafe { create(&instance, desc) }.unwrap_err();
+        match err {
+            RendererError::UnsupportedSurfaceKind(msg) => {
+                assert!(
+                    msg.contains("ISwapChainPanelNative"),
+                    "expected the DX12-branch-specific null-handle message, got: {msg}"
+                );
+            }
+            other => panic!("expected UnsupportedSurfaceKind, got {other:?}"),
+        }
     }
 
     #[test]
