@@ -12,6 +12,8 @@
 //! background→baked→wet composite order) lives here, in the UI-agnostic core,
 //! so the mac and (later) Windows shells share exactly one implementation.
 
+use std::sync::{Arc, Mutex};
+
 use akapen_core::coord::ViewTransform;
 use akapen_core::engine::{BakeDelta, CommittedStrokeRef};
 
@@ -49,6 +51,19 @@ pub struct SurfaceRenderer {
     pub renderer: Renderer,
     pub surface: wgpu::Surface<'static>,
     pub config: wgpu::SurfaceConfiguration,
+    /// Set by the `on_uncaptured_error` handler installed in [`Self::new`]
+    /// whenever a `wgpu::Surface::configure` call reports a validation
+    /// error. `Surface::configure`'s public API returns `()`, not a
+    /// `Result` — without this handler installed, the *default* uncaptured-
+    /// error behavior is to panic the whole process (discovered during the
+    /// Windows HWND presentation de-risk run: a target HWND with no
+    /// attached desktop/compositor session fails configure with "Invalid
+    /// surface", which otherwise took the process down). [`Self::new`]
+    /// checks this immediately after the first `configure` and turns it
+    /// into a returned [`RendererError::SurfaceConfigure`]; [`Self::resize`]
+    /// checks it too (logging rather than failing, since it has no `Result`
+    /// return to propagate through).
+    configure_error: Arc<Mutex<Option<String>>>,
 }
 
 impl SurfaceRenderer {
@@ -90,7 +105,25 @@ impl SurfaceRenderer {
         }
         let format = choose_surface_format(&caps);
         let config = surface_configuration(format, width, height, DEFAULT_PRESENT_MODE);
+
+        // Install the handler *before* the first `configure` call so that a
+        // validation failure there is captured, not panicked (see the
+        // `configure_error` doc comment above).
+        let configure_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        {
+            let captured = Arc::clone(&configure_error);
+            device.on_uncaptured_error(Arc::new(move |err: wgpu::Error| {
+                *captured.lock().expect("configure_error mutex poisoned") = Some(err.to_string());
+            }));
+        }
         surface.configure(&device, &config);
+        if let Some(msg) = configure_error
+            .lock()
+            .expect("configure_error mutex poisoned")
+            .take()
+        {
+            return Err(RendererError::SurfaceConfigure(msg));
+        }
 
         let renderer = Renderer {
             instance,
@@ -102,6 +135,7 @@ impl SurfaceRenderer {
             renderer,
             surface,
             config,
+            configure_error,
         })
     }
 
@@ -125,6 +159,21 @@ impl SurfaceRenderer {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         self.surface.configure(&self.renderer.device, &self.config);
+        // Same handler as `new` (installed once, on the device, for its
+        // lifetime) — a resize-time configure failure is caught here rather
+        // than panicking, but `resize` has no `Result` to propagate through
+        // (the FFI's `akapen_render_resize` is `void`), so this is logged
+        // rather than surfaced to the caller. The next `render()` call will
+        // simply fail to acquire a texture and skip the frame (see
+        // `SurfaceRenderer::acquire`) rather than crash.
+        if let Some(msg) = self
+            .configure_error
+            .lock()
+            .expect("configure_error mutex poisoned")
+            .take()
+        {
+            log::error!("SurfaceRenderer::resize: configure failed: {msg}");
+        }
     }
 
     /// Acquires the next swapchain texture, transparently reconfiguring and
@@ -269,6 +318,21 @@ impl GpuCanvas {
         (self.buffer_w, self.buffer_h)
     }
 
+    /// A short human-readable line identifying the attached surface's actual
+    /// wgpu backend / swapchain configuration (spec §7.4-6 presentation
+    /// de-risk: a Windows HWND/DX12 present-path acceptance run needs to
+    /// prove *which* backend/present mode/frame-latency were actually
+    /// selected, not just assume the platform default held — this is the
+    /// evidence a headless SSH session can capture without a screenshot).
+    pub fn backend_info(&self) -> String {
+        let info = self.sr.renderer.adapter.get_info();
+        format_backend_info(
+            info.backend,
+            self.sr.config.present_mode,
+            self.sr.config.desired_maximum_frame_latency,
+        )
+    }
+
     /// Draws one on-screen frame: acquire the swapchain texture, composite
     /// background → `baked_tex` → wet ink through `view`, and present.
     /// `wet` is the in-progress stroke, if any
@@ -299,5 +363,29 @@ impl GpuCanvas {
             view,
         );
         self.sr.renderer.queue.present(frame);
+    }
+}
+
+/// Pure formatting for [`GpuCanvas::backend_info`], split out so it is
+/// unit-testable without a real adapter/surface (mirrors this crate's
+/// convention of keeping GPU-independent logic testable on any machine).
+fn format_backend_info(
+    backend: wgpu::Backend,
+    present_mode: wgpu::PresentMode,
+    max_frame_latency: u32,
+) -> String {
+    format!(
+        "backend={backend:?} present_mode={present_mode:?} max_frame_latency={max_frame_latency}"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_backend_info_reports_all_three_fields() {
+        let s = format_backend_info(wgpu::Backend::Dx12, wgpu::PresentMode::Fifo, 1);
+        assert_eq!(s, "backend=Dx12 present_mode=Fifo max_frame_latency=1");
     }
 }

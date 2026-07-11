@@ -24,6 +24,7 @@ dependencies = [
  "akapen-core",
  "akapen-io",
  "akapen-render",
+ "log",
 ]
 
 [[package]]

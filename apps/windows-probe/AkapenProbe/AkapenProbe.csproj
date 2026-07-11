@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- This is a throwaway de-risk spike (see ../README.md), not the future
+         WinUI 3 shell (bindings/dotnet, M2): kept minimal on purpose, no
+         WinForms/WPF/WinUI reference, just raw user32.dll P/Invoke for the
+         HWND and DllImport("akapen") for the C ABI. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+</Project>

@@ -66,6 +66,15 @@ size_t akapen_composite_rgba(AkapenEngine *engine, uint8_t *out, size_t out_len)
  */
 int akapen_export_to_dir(AkapenEngine *engine, const char *dir, const char *stem);
 
+/*
+ * Enables a minimal stderr diagnostic logger (warn level and above) for this
+ * process. Off by default. Call once, early -- before akapen_render_attach if
+ * diagnosing a surface bring-up failure (some wgpu-core validation failures
+ * only log their specific underlying reason, not just the returned generic
+ * error). Idempotent.
+ */
+void akapen_enable_diagnostic_logging(void);
+
 /* ──────────────────────────────────────────────────────────────────────────
  * Phase e: GPU surface path (spec §7.4-6 "GPU 描画(wgpu: Metal/D3D12)").
  *
@@ -138,6 +147,26 @@ void akapen_render_detach(AkapenEngine *engine);
 
 /* Returns 1 if a GPU surface is currently attached (GPU path active), else 0. */
 int akapen_render_available(AkapenEngine *engine);
+
+/*
+ * Writes a short NUL-terminated diagnostic line describing the attached
+ * surface's actual backend/present-mode/frame-latency (e.g.
+ * "backend=Dx12 present_mode=Fifo max_frame_latency=1") into `out`. Same
+ * size-probe convention as akapen_composite_rgba: returns the bytes needed
+ * (incl. NUL); call once with out=NULL/out_len=0 to size the buffer. Returns
+ * 0 if no surface is attached.
+ */
+size_t akapen_render_backend_info(AkapenEngine *engine, char *out, size_t out_len);
+
+/*
+ * Writes a short NUL-terminated message describing why the most recent
+ * akapen_render_attach call failed (a bare code-4 return otherwise collapses
+ * four distinct underlying failures: no adapter / device request failed /
+ * surface creation failed / unsupported kind). Same size-probe convention;
+ * returns bytes needed (incl. NUL). Returns 0 if the last attach succeeded or
+ * none was attempted.
+ */
+size_t akapen_render_last_attach_error(AkapenEngine *engine, char *out, size_t out_len);
 
 #ifdef __cplusplus
 }

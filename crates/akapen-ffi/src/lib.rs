@@ -44,6 +44,16 @@ pub struct AkapenEngine {
     inner: Engine,
     gpu: Option<GpuCanvas>,
     pending: BakeDelta,
+    /// The `Display` text of the most recent `akapen_render_attach` failure,
+    /// if any (cleared on a successful attach). `akapen_render_attach` only
+    /// returns an opaque code (1-4) across the C ABI — code 4 alone collapses
+    /// four distinct [`akapen_render::RendererError`] variants (no adapter /
+    /// device request failed / surface creation failed / unsupported kind).
+    /// This field lets a caller doing platform bring-up (e.g. the Windows
+    /// HWND de-risk probe) retrieve the real reason via
+    /// [`akapen_render_last_attach_error`] instead of guessing from the code
+    /// alone.
+    last_attach_error: Option<String>,
 }
 
 /// Folds a newly-reported [`BakeDelta`] into the accumulated one held between
@@ -152,6 +162,7 @@ pub unsafe extern "C" fn akapen_open_image(path: *const c_char) -> *mut AkapenEn
                 inner: engine,
                 gpu: None,
                 pending: BakeDelta::None,
+                last_attach_error: None,
             }))
         }
         Err(_) => std::ptr::null_mut(),
@@ -168,6 +179,7 @@ pub extern "C" fn akapen_new(width: u32, height: u32) -> *mut AkapenEngine {
         inner: Engine::new(width, height),
         gpu: None,
         pending: BakeDelta::None,
+        last_attach_error: None,
     }))
 }
 
@@ -370,6 +382,45 @@ pub unsafe extern "C" fn akapen_export_to_dir(
     0
 }
 
+/// Minimal stderr [`log::Log`] implementation: no external logging crate
+/// (`env_logger` etc. are not approved dependencies), just the already-used
+/// `log` facade printing straight to stderr. Off by default — `log`'s
+/// records are silently dropped everywhere in this codebase until a caller
+/// opts in via [`akapen_enable_diagnostic_logging`]. This matters for GPU
+/// surface diagnosis in particular: wgpu-core logs the *specific* reason
+/// behind some validation failures (e.g. the underlying HRESULT/message
+/// behind a DX12 swapchain creation failure) via `log::error!` before
+/// collapsing them to a generic error variant the `Result`/`RendererError`
+/// path never sees otherwise (discovered during the Windows HWND
+/// presentation de-risk).
+struct StderrLogger;
+
+impl log::Log for StderrLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("[akapen:{}] {}: {}", record.level(), record.target(), record.args());
+        }
+    }
+    fn flush(&self) {}
+}
+
+static STDERR_LOGGER: StderrLogger = StderrLogger;
+
+/// Enables the minimal stderr diagnostic logger (warn level and above) for
+/// this process. Call once, early — before [`akapen_render_attach`] if
+/// diagnosing a surface bring-up failure. Idempotent: safe to call more than
+/// once (a logger already being registered, from an earlier call or from
+/// the embedding host, is not treated as an error).
+#[no_mangle]
+pub extern "C" fn akapen_enable_diagnostic_logging() {
+    if log::set_logger(&STDERR_LOGGER).is_ok() {
+        log::set_max_level(log::LevelFilter::Warn);
+    }
+}
+
 // ── Phase e: GPU surface path (spec §7.4-6) ──────────────────────────────
 //
 // These are additive and independent of the CPU path: `akapen_composite_rgba`
@@ -428,10 +479,47 @@ pub unsafe extern "C" fn akapen_render_attach(
             // The freshly-attached canvas already baked the whole committed
             // history, so there is nothing pending to replay on the first frame.
             e.pending = BakeDelta::None;
+            e.last_attach_error = None;
             0
         }
-        Err(_) => 4,
+        Err(err) => {
+            e.last_attach_error = Some(err.to_string());
+            4
+        }
     }
+}
+
+/// Writes a short NUL-terminated ASCII message describing why the most
+/// recent [`akapen_render_attach`] call failed (e.g.
+/// `"failed to create surface: ..."`), so a caller bringing up a new
+/// platform surface (a bare code-4 return is otherwise opaque across four
+/// distinct underlying failures — no adapter / device request failed /
+/// surface creation failed / unsupported kind) can log the real reason.
+/// Same size-probe convention as [`akapen_composite_rgba`]: returns bytes
+/// needed (incl. NUL); call once with `out=NULL`/`out_len=0` to size the
+/// buffer. Returns 0 if the last attach succeeded or none was attempted.
+///
+/// # Safety
+/// `out` must point to at least `out_len` writable bytes, or be null.
+#[no_mangle]
+pub unsafe extern "C" fn akapen_render_last_attach_error(
+    engine: *mut AkapenEngine,
+    out: *mut c_char,
+    out_len: usize,
+) -> usize {
+    let Some(e) = as_engine(engine) else {
+        return 0;
+    };
+    let Some(msg) = e.last_attach_error.as_ref() else {
+        return 0;
+    };
+    let needed = msg.len() + 1; // + NUL
+    if out.is_null() || out_len < needed {
+        return needed;
+    }
+    std::ptr::copy_nonoverlapping(msg.as_ptr(), out as *mut u8, msg.len());
+    *out.add(msg.len()) = 0;
+    needed
 }
 
 /// Re-configures the attached surface for a new pixel size (physical pixels)
@@ -510,6 +598,38 @@ pub unsafe extern "C" fn akapen_render_available(engine: *mut AkapenEngine) -> c
     }
 }
 
+/// Writes a short NUL-terminated ASCII diagnostic line identifying the
+/// attached surface's actual backend / present mode / max frame latency
+/// (e.g. `"backend=Dx12 present_mode=Fifo max_frame_latency=1"`) into `out`.
+/// Same size-probe convention as [`akapen_composite_rgba`]: returns the
+/// number of bytes needed (including the NUL terminator); call once with
+/// `out=NULL`/`out_len=0` to size the buffer. Returns 0 (and writes nothing)
+/// if no surface is attached.
+///
+/// # Safety
+/// `out` must point to at least `out_len` writable bytes, or be null.
+#[no_mangle]
+pub unsafe extern "C" fn akapen_render_backend_info(
+    engine: *mut AkapenEngine,
+    out: *mut c_char,
+    out_len: usize,
+) -> usize {
+    let Some(e) = as_engine(engine) else {
+        return 0;
+    };
+    let Some(gpu) = e.gpu.as_ref() else {
+        return 0;
+    };
+    let info = gpu.backend_info();
+    let needed = info.len() + 1; // + NUL
+    if out.is_null() || out_len < needed {
+        return needed;
+    }
+    std::ptr::copy_nonoverlapping(info.as_ptr(), out as *mut u8, info.len());
+    *out.add(info.len()) = 0;
+    needed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,6 +670,17 @@ mod tests {
 
             akapen_free(e);
         }
+    }
+
+    #[test]
+    fn enable_diagnostic_logging_is_idempotent_and_raises_max_level() {
+        // Calling it more than once (e.g. once from a probe host, once from
+        // a future caller) must not panic -- log::set_logger only succeeds
+        // the first time process-wide, and this function is documented as
+        // tolerating that.
+        akapen_enable_diagnostic_logging();
+        akapen_enable_diagnostic_logging();
+        assert!(log::max_level() >= log::LevelFilter::Warn);
     }
 
     #[test]
@@ -644,6 +775,60 @@ mod tests {
             akapen_render_frame(std::ptr::null_mut(), view);
             akapen_render_detach(std::ptr::null_mut());
             assert_eq!(akapen_render_available(std::ptr::null_mut()), 0);
+            assert_eq!(
+                akapen_render_backend_info(std::ptr::null_mut(), std::ptr::null_mut(), 0),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn last_attach_error_captures_the_real_reason_behind_a_code_4_failure() {
+        // A known-kind, null-handle desc reaches GpuCanvas::attach and fails
+        // there (code 4), unlike the null-desc/unknown-kind cases above
+        // (codes 2/3) which never call it. This is platform-independent: on
+        // every OS `MetalLayer` with a null handle is rejected by
+        // `surface::create` before any GPU work starts.
+        let e = akapen_new(16, 16);
+        assert!(!e.is_null());
+        unsafe {
+            let desc = AkapenSurfaceDesc {
+                kind: 0, // MetalLayer
+                handle: std::ptr::null_mut(),
+                display: std::ptr::null_mut(),
+                width: 16,
+                height: 16,
+                scale_factor: 1.0,
+            };
+            assert_eq!(akapen_render_attach(e, &desc), 4);
+
+            let need = akapen_render_last_attach_error(e, std::ptr::null_mut(), 0);
+            assert!(need > 1, "expected a non-empty error message, got len {need}");
+            let mut buf: Vec<c_char> = vec![0; need];
+            let got = akapen_render_last_attach_error(e, buf.as_mut_ptr(), buf.len());
+            assert_eq!(got, need);
+            let msg = CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
+            assert!(
+                msg.contains("NSView"),
+                "expected the underlying RendererError text, got: {msg}"
+            );
+
+            akapen_free(e);
+        }
+    }
+
+    #[test]
+    fn backend_info_is_zero_when_no_surface_attached() {
+        let e = akapen_new(16, 16);
+        assert!(!e.is_null());
+        unsafe {
+            // No GPU surface attached (headless/CI or CPU-only path): the
+            // probe must report "nothing to show" rather than crash.
+            assert_eq!(
+                akapen_render_backend_info(e, std::ptr::null_mut(), 0),
+                0
+            );
+            akapen_free(e);
         }
     }
 
@@ -667,6 +852,13 @@ mod tests {
             };
             assert_eq!(akapen_render_attach(e, &bad), 3);
             assert_eq!(akapen_render_available(e), 0);
+            // Codes 2/3 are returned before GpuCanvas::attach ever runs, so
+            // they never touch last_attach_error (that field is reserved for
+            // code-4 GpuCanvas/RendererError failures specifically).
+            assert_eq!(
+                akapen_render_last_attach_error(e, std::ptr::null_mut(), 0),
+                0
+            );
 
             // The CPU composite path must still work while GPU is unattached.
             let need = akapen_composite_rgba(e, std::ptr::null_mut(), 0);

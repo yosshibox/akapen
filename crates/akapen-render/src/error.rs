@@ -22,6 +22,16 @@ pub enum RendererError {
     /// standard wgpu `Surface` (raw window/display handle) attach path.
     /// See [`crate::surface::SurfaceKind::SwapChainPanel`] doc comment.
     UnsupportedSurfaceKind(&'static str),
+    /// `wgpu::Surface::configure` reported a validation error through the
+    /// device's uncaptured-error handler (see
+    /// [`crate::canvas::SurfaceRenderer::new`]). Note this is *not* the same
+    /// thing as [`Self::CreateSurface`]: `Surface::configure`'s public API
+    /// returns `()`, not a `Result` — without an installed
+    /// `on_uncaptured_error` handler, this failure mode panics the process
+    /// instead of surfacing here (discovered during the Windows HWND
+    /// presentation de-risk: a real target HWND with no attached
+    /// desktop/compositor session fails `configure` with "Invalid surface").
+    SurfaceConfigure(String),
 }
 
 impl fmt::Display for RendererError {
@@ -32,6 +42,9 @@ impl fmt::Display for RendererError {
             RendererError::CreateSurface(e) => write!(f, "failed to create surface: {e}"),
             RendererError::UnsupportedSurfaceKind(reason) => {
                 write!(f, "unsupported surface kind: {reason}")
+            }
+            RendererError::SurfaceConfigure(msg) => {
+                write!(f, "surface configure failed: {msg}")
             }
         }
     }

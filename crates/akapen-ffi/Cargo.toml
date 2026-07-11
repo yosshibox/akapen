@@ -21,3 +21,7 @@ akapen-io = { path = "../akapen-io" }
 # Phase e: the GPU surface path (wgpu). The FFI stays a thin extern "C" shim —
 # all surface bring-up / composite logic lives in akapen-render's GpuCanvas.
 akapen-render = { path = "../akapen-render" }
+# Already an approved dependency (akapen-render depends on the same crate,
+# same version) — no new external crate here, just visible to this crate
+# too, for akapen_enable_diagnostic_logging (see lib.rs).
+log = "0.4"
