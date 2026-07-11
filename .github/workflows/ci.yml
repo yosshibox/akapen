@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Core (+ io) build and test on all three target OSes. This is the only job
+  # that compiles real code at M0.
+  core:
+    name: core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Build
+        run: cargo build --workspace --verbose
+      - name: Test (includes reference-vector ports)
+        run: cargo test --workspace --verbose
+
+  # Tri-face build discipline (spec §9): the three binding faces must always be
+  # exercised so UI dependencies cannot leak into the core. At M0 these are
+  # placeholders that assert the scaffold exists; they become real generate +
+  # build steps as bindings land (Swift M1, .NET M2, Node M5).
+  bindings-swift:
+    name: bindings / swift (placeholder)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder — swift binding face present
+        run: test -f bindings/swift/../README.md && echo "swift binding scaffold present"
+
+  bindings-dotnet:
+    name: bindings / dotnet (placeholder)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder — dotnet binding face present
+        shell: bash
+        run: test -f bindings/README.md && echo "dotnet binding scaffold present"
+
+  bindings-node:
+    name: bindings / node (placeholder)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder — node binding face present
+        run: test -f bindings/README.md && echo "node binding scaffold present"
