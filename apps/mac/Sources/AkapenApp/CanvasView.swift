@@ -12,6 +12,7 @@
 
 import AkapenKit
 import AppKit
+import CAkapen
 import SwiftUI
 
 struct CanvasView: NSViewRepresentable {
@@ -59,7 +60,8 @@ final class CanvasNSView: NSView {
     private weak var attachedEngine: AkapenEngine?
     private var lastPhysicalSize: CGSize = .zero
 
-    // Space held → pan mode (spec §3 CSP: Space-drag pans).
+    // Space held → pan mode (spec §3 CSP: Space-drag pans). With Shift also
+    // held, a Space drag rotates the canvas instead (spec §3.1).
     private var spaceDown = false
 
     override var isFlipped: Bool { true } // top-left origin, matches image space
@@ -286,10 +288,15 @@ final class CanvasNSView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         if spaceDown {
-            pan.width += event.deltaX
-            pan.height += event.deltaY
-            needsDisplay = true
-            renderGPU()
+            // Shift+Space drag rotates; plain Space drag pans (spec §3.1).
+            if event.modifierFlags.contains(.shift) {
+                rotate(by: event.deltaX * 0.5)
+            } else {
+                pan.width += event.deltaX
+                pan.height += event.deltaY
+                needsDisplay = true
+                renderGPU()
+            }
             return
         }
         send(event, phase: .move)
@@ -320,21 +327,164 @@ final class CanvasNSView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        switch event.charactersIgnoringModifiers {
-        case " ": spaceDown = true
-        default: super.keyDown(with: event)
+        // Plain Space is a momentary-pan hold (not a discrete action): tracked
+        // here, not routed through the core keymap. (Shift+Space drag rotates —
+        // decided at drag time in mouseDragged.)
+        if event.charactersIgnoringModifiers == " ",
+           !event.modifierFlags.contains(.command),
+           !event.modifierFlags.contains(.option) {
+            spaceDown = true
+            return
         }
+        // Every other key goes through the core keymap (spec §3).
+        if let action = resolveAction(for: event), dispatch(action) {
+            return
+        }
+        super.keyDown(with: event)
     }
 
     override func keyUp(with event: NSEvent) {
         if event.charactersIgnoringModifiers == " " { spaceDown = false }
     }
 
-    /// Rotate the canvas (called from the toolbar).
+    /// Rotate the canvas (called from the toolbar or a rotation key).
     func rotate(by deg: CGFloat) {
         rotationDeg += deg
         needsDisplay = true
         renderGPU()
+    }
+
+    // MARK: keymap (spec §3)
+
+    /// Whether the shell is currently editing text or composing with an IME, in
+    /// which case the core keymap must not steal keys (B15 / B21 lessons). The
+    /// M1 shell has no in-canvas text fields, but the toolbar ColorPicker and a
+    /// future text tool do, so we honor the first responder's field editor and
+    /// its marked-text (IME composition) state.
+    private func textInputGuards() -> (composing: Bool, editing: Bool) {
+        guard let responder = window?.firstResponder else { return (false, false) }
+        // A field editor (NSTextView backing a text field) means text editing.
+        let editing = responder is NSText || responder is NSTextView
+        var composing = false
+        if let tv = responder as? NSTextView {
+            composing = tv.hasMarkedText()
+        }
+        return (composing, editing)
+    }
+
+    /// Maps an NSEvent to the corresponding physical-key code the C ABI expects.
+    /// Uses hardware `keyCode` so it is keyboard-layout independent (JIS/US),
+    /// which is what recovers `[` `]` `-` `^` when the produced character differs
+    /// by layout or is swallowed by an IME (spec §3, cross-platform rule 5).
+    private func physicalCode(for event: NSEvent) -> Int32 {
+        // macOS ANSI/JIS virtual key codes (Carbon kVK_*). Stable across layouts.
+        switch event.keyCode {
+        case 35: return Int32(AKAPEN_PK_P)
+        case 14: return Int32(AKAPEN_PK_E)
+        case 32: return Int32(AKAPEN_PK_U)
+        case 0: return Int32(AKAPEN_PK_A)
+        case 15: return Int32(AKAPEN_PK_R)
+        case 31: return Int32(AKAPEN_PK_O)
+        case 17: return Int32(AKAPEN_PK_T)
+        case 34: return Int32(AKAPEN_PK_I)
+        case 7: return Int32(AKAPEN_PK_X)
+        case 8: return Int32(AKAPEN_PK_C)
+        case 6: return Int32(AKAPEN_PK_Z)
+        case 16: return Int32(AKAPEN_PK_Y)
+        case 29: return Int32(AKAPEN_PK_DIGIT0) // top-row 0
+        case 49: return Int32(AKAPEN_PK_SPACE)
+        case 33: return Int32(AKAPEN_PK_BRACKET_LEFT)
+        case 30: return Int32(AKAPEN_PK_BRACKET_RIGHT)
+        case 27: return Int32(AKAPEN_PK_MINUS)
+        case 24: return Int32(AKAPEN_PK_CARET) // JIS '^' key position (US '=')
+        case 116: return Int32(AKAPEN_PK_PAGE_UP)
+        case 121: return Int32(AKAPEN_PK_PAGE_DOWN)
+        default: return Int32(AKAPEN_PK_OTHER)
+        }
+    }
+
+    /// Runs the event through the core key map, returning the resolved action
+    /// code (or nil for AKAPEN_ACT_NONE).
+    private func resolveAction(for event: NSEvent) -> Int32? {
+        let (composing, editing) = textInputGuards()
+        // `primary` = platform accelerator: Command on macOS (cross-platform
+        // rule 1). The character is taken ignoring Cmd/Option so US layouts see
+        // the base character.
+        let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first?.value ?? 0
+        let flags = event.modifierFlags
+        let code = akapen_resolve_key(
+            scalar,
+            physicalCode(for: event),
+            flags.contains(.command) ? 1 : 0,
+            flags.contains(.shift) ? 1 : 0,
+            flags.contains(.option) ? 1 : 0,
+            composing ? 1 : 0,
+            editing ? 1 : 0)
+        return code == Int32(AKAPEN_ACT_NONE) ? nil : code
+    }
+
+    /// Applies a resolved action. Returns true if it was handled (so keyDown
+    /// stops propagation), false to let the event fall through to the menu/OS.
+    private func dispatch(_ action: Int32) -> Bool {
+        guard let state, state.engine != nil else { return false }
+        switch action {
+        case Int32(AKAPEN_ACT_TOOL_PEN):
+            state.tool = .pen
+            state.applyToolState()
+        case Int32(AKAPEN_ACT_TOOL_ERASER):
+            state.tool = .eraser
+            state.applyToolState()
+        case Int32(AKAPEN_ACT_UNDO):
+            state.undo()
+        case Int32(AKAPEN_ACT_REDO):
+            state.redo()
+        case Int32(AKAPEN_ACT_ZOOM_IN):
+            zoomBy(1.25)
+        case Int32(AKAPEN_ACT_ZOOM_OUT):
+            zoomBy(1.0 / 1.25)
+        case Int32(AKAPEN_ACT_FIT):
+            fitToWindow()
+        case Int32(AKAPEN_ACT_ACTUAL_SIZE):
+            setActualSize()
+        case Int32(AKAPEN_ACT_ROTATE_LEFT):
+            rotate(by: -15)
+        case Int32(AKAPEN_ACT_ROTATE_RIGHT):
+            rotate(by: 15)
+        case Int32(AKAPEN_ACT_BRUSH_SMALLER):
+            adjustBrush(-2)
+        case Int32(AKAPEN_ACT_BRUSH_LARGER):
+            adjustBrush(2)
+        case Int32(AKAPEN_ACT_NEXT_FRAME):
+            state.step(forward: true)
+        case Int32(AKAPEN_ACT_PREV_FRAME):
+            state.step(forward: false)
+        // M3 tools/colors (mapped by the core but not acted on at M1): report
+        // as unhandled so the key is not silently eaten.
+        default:
+            return false
+        }
+        return true
+    }
+
+    /// Zooms about the view center, matching the scroll-wheel clamp.
+    private func zoomBy(_ factor: CGFloat) {
+        zoom = max(0.02, min(20, zoom * factor))
+        needsDisplay = true
+        renderGPU()
+    }
+
+    /// 100% view (1 image pixel : 1 view point), centered.
+    private func setActualSize() {
+        zoom = 1
+        pan = .zero
+        needsDisplay = true
+        renderGPU()
+    }
+
+    private func adjustBrush(_ delta: Double) {
+        guard let state else { return }
+        state.brushSize = max(1, min(80, state.brushSize + delta))
+        state.applyToolState()
     }
 }
 

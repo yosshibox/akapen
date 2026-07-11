@@ -38,7 +38,7 @@ let package = Package(
         // The SwiftUI editor app (the real shell). Run with `swift run AkapenApp`.
         .executableTarget(
             name: "AkapenApp",
-            dependencies: ["AkapenKit"],
+            dependencies: ["AkapenKit", "CAkapen"],
             linkerSettings: linkRust
         ),
 

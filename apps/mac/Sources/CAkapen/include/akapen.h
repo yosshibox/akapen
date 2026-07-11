@@ -67,6 +67,57 @@ size_t akapen_composite_rgba(AkapenEngine *engine, uint8_t *out, size_t out_len)
 int akapen_export_to_dir(AkapenEngine *engine, const char *dir, const char *stem);
 
 /* ──────────────────────────────────────────────────────────────────────────
+ * Key mapping (spec §3).
+ *
+ * akapen_resolve_key is a pure, engine-independent function: the shell passes a
+ * described key-down event and gets back a stable action code (AKAPEN_ACT_*).
+ * Keeping the shortcut table in the core means every platform shares one map.
+ *
+ *   ch           Unicode scalar produced ignoring the primary/alt modifiers
+ *                (mac charactersIgnoringModifiers), or 0 for none.
+ *   physical     physical-key code (AKAPEN_PK_*), 0 for unknown/other.
+ *   primary      1 while the primary accelerator is held (Cmd on mac, Ctrl on
+ *                Windows/Linux); shift/alt likewise.
+ *   composing    1 while an IME composition is active  (do not steal keys; B21).
+ *   text_editing 1 while focus is in a text control    (do not steal keys; B15).
+ *
+ * Returns an AKAPEN_ACT_* code, or AKAPEN_ACT_NONE (0) to leave the key alone.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/* Physical-key codes for akapen_resolve_key `physical`. */
+enum {
+    AKAPEN_PK_OTHER = 0,
+    AKAPEN_PK_P = 1, AKAPEN_PK_E = 2, AKAPEN_PK_U = 3, AKAPEN_PK_A = 4,
+    AKAPEN_PK_R = 5, AKAPEN_PK_O = 6, AKAPEN_PK_T = 7, AKAPEN_PK_I = 8,
+    AKAPEN_PK_X = 9, AKAPEN_PK_C = 10, AKAPEN_PK_Z = 11, AKAPEN_PK_Y = 12,
+    AKAPEN_PK_DIGIT0 = 13, AKAPEN_PK_SPACE = 14,
+    AKAPEN_PK_BRACKET_LEFT = 15, AKAPEN_PK_BRACKET_RIGHT = 16,
+    AKAPEN_PK_MINUS = 17, AKAPEN_PK_CARET = 18,
+    AKAPEN_PK_PAGE_UP = 19, AKAPEN_PK_PAGE_DOWN = 20
+};
+
+/* Action codes returned by akapen_resolve_key. 0 = no action. Tool codes
+ * 1..7 match akapen_set_tool numbering. */
+enum {
+    AKAPEN_ACT_NONE = 0,
+    AKAPEN_ACT_TOOL_PEN = 1, AKAPEN_ACT_TOOL_ERASER = 2, AKAPEN_ACT_TOOL_LINE = 3,
+    AKAPEN_ACT_TOOL_ARROW = 4, AKAPEN_ACT_TOOL_RECT = 5, AKAPEN_ACT_TOOL_ELLIPSE = 6,
+    AKAPEN_ACT_TOOL_TEXT = 7,
+    AKAPEN_ACT_UNDO = 10, AKAPEN_ACT_REDO = 11,
+    AKAPEN_ACT_ZOOM_IN = 12, AKAPEN_ACT_ZOOM_OUT = 13,
+    AKAPEN_ACT_FIT = 14, AKAPEN_ACT_ACTUAL_SIZE = 15,
+    AKAPEN_ACT_ROTATE_LEFT = 16, AKAPEN_ACT_ROTATE_RIGHT = 17,
+    AKAPEN_ACT_BRUSH_SMALLER = 18, AKAPEN_ACT_BRUSH_LARGER = 19,
+    AKAPEN_ACT_NEXT_FRAME = 20, AKAPEN_ACT_PREV_FRAME = 21,
+    AKAPEN_ACT_SWAP_COLOR = 22, AKAPEN_ACT_EYEDROPPER = 23,
+    AKAPEN_ACT_TRANSPARENT_COLOR = 24
+};
+
+int32_t akapen_resolve_key(uint32_t ch, int32_t physical,
+                           int primary, int shift, int alt,
+                           int composing, int text_editing);
+
+/* ──────────────────────────────────────────────────────────────────────────
  * Phase e: GPU surface path (spec §7.4-6 "GPU 描画(wgpu: Metal/D3D12)").
  *
  * Optional and additive: the CPU composite path (akapen_composite_rgba /

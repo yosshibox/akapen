@@ -635,6 +635,143 @@ pub unsafe extern "C" fn akapen_render_backend_info(
     needed
 }
 
+// ── Key mapping (spec §3) ────────────────────────────────────────────────
+//
+// A pure, engine-independent bridge to `akapen_core::keymap`. The shell hands
+// over a described key event (produced character, physical key code, modifier
+// flags, and the IME / text-editing guards) and gets back a stable integer
+// action code. Keeping the mapping in the core means mac / Windows / Node share
+// exactly one shortcut table (spec §3).
+
+/// Stable C ABI action codes returned by [`akapen_resolve_key`]. `0` = no action
+/// (leave the key alone). Mirrored in `include/akapen.h`.
+mod action_code {
+    pub const NONE: i32 = 0;
+    // Tools 1..=7 match the `akapen_set_tool` numbering.
+    pub const TOOL_PEN: i32 = 1;
+    pub const TOOL_ERASER: i32 = 2;
+    pub const TOOL_LINE: i32 = 3;
+    pub const TOOL_ARROW: i32 = 4;
+    pub const TOOL_RECT: i32 = 5;
+    pub const TOOL_ELLIPSE: i32 = 6;
+    pub const TOOL_TEXT: i32 = 7;
+    pub const UNDO: i32 = 10;
+    pub const REDO: i32 = 11;
+    pub const ZOOM_IN: i32 = 12;
+    pub const ZOOM_OUT: i32 = 13;
+    pub const FIT: i32 = 14;
+    pub const ACTUAL_SIZE: i32 = 15;
+    pub const ROTATE_LEFT: i32 = 16;
+    pub const ROTATE_RIGHT: i32 = 17;
+    pub const BRUSH_SMALLER: i32 = 18;
+    pub const BRUSH_LARGER: i32 = 19;
+    pub const NEXT_FRAME: i32 = 20;
+    pub const PREV_FRAME: i32 = 21;
+    pub const SWAP_COLOR: i32 = 22;
+    pub const EYEDROPPER: i32 = 23;
+    pub const TRANSPARENT_COLOR: i32 = 24;
+}
+
+/// Stable C ABI physical-key codes accepted by [`akapen_resolve_key`]. `0` =
+/// unknown/other. Mirrored in `include/akapen.h`; the shell maps its native
+/// keyCode/scancode to these.
+fn physical_key_from_code(code: i32) -> akapen_core::PhysicalKey {
+    use akapen_core::PhysicalKey as K;
+    match code {
+        1 => K::KeyP,
+        2 => K::KeyE,
+        3 => K::KeyU,
+        4 => K::KeyA,
+        5 => K::KeyR,
+        6 => K::KeyO,
+        7 => K::KeyT,
+        8 => K::KeyI,
+        9 => K::KeyX,
+        10 => K::KeyC,
+        11 => K::KeyZ,
+        12 => K::KeyY,
+        13 => K::Digit0,
+        14 => K::Space,
+        15 => K::BracketLeft,
+        16 => K::BracketRight,
+        17 => K::Minus,
+        18 => K::Caret,
+        19 => K::PageUp,
+        20 => K::PageDown,
+        _ => K::Other,
+    }
+}
+
+fn action_to_code(action: akapen_core::Action) -> i32 {
+    use action_code as C;
+    use akapen_core::Action as A;
+    use akapen_core::Tool;
+    match action {
+        A::SelectTool(Tool::Pen) => C::TOOL_PEN,
+        A::SelectTool(Tool::Eraser) => C::TOOL_ERASER,
+        A::SelectTool(Tool::Line) => C::TOOL_LINE,
+        A::SelectTool(Tool::Arrow) => C::TOOL_ARROW,
+        A::SelectTool(Tool::Rect) => C::TOOL_RECT,
+        A::SelectTool(Tool::Ellipse) => C::TOOL_ELLIPSE,
+        A::SelectTool(Tool::Text) => C::TOOL_TEXT,
+        A::Undo => C::UNDO,
+        A::Redo => C::REDO,
+        A::ZoomIn => C::ZOOM_IN,
+        A::ZoomOut => C::ZOOM_OUT,
+        A::FitToWindow => C::FIT,
+        A::ActualSize => C::ACTUAL_SIZE,
+        A::RotateLeft => C::ROTATE_LEFT,
+        A::RotateRight => C::ROTATE_RIGHT,
+        A::BrushSmaller => C::BRUSH_SMALLER,
+        A::BrushLarger => C::BRUSH_LARGER,
+        A::NextFrame => C::NEXT_FRAME,
+        A::PrevFrame => C::PREV_FRAME,
+        A::SwapColor => C::SWAP_COLOR,
+        A::Eyedropper => C::EYEDROPPER,
+        A::TransparentColor => C::TRANSPARENT_COLOR,
+    }
+}
+
+/// Maps a described key-down event to an editor action code (spec §3). Pure and
+/// engine-independent — no handle is needed.
+///
+/// - `ch`: the Unicode scalar the key produced *ignoring* the primary/alt
+///   modifiers (mac `charactersIgnoringModifiers`), or `0` for none.
+/// - `physical`: the physical-key code (see `physical_key_from_code` /
+///   `akapen.h`), `0` for unknown.
+/// - `primary`/`shift`/`alt`: modifier flags (non-zero = held). `primary` is
+///   Cmd on macOS, Ctrl on Windows/Linux.
+/// - `composing`: non-zero while an IME composition is active (B21 guard).
+/// - `text_editing`: non-zero while focus is in a text control (B15 guard).
+///
+/// Returns a stable action code (`action_code`), or `0` to leave the key alone.
+#[no_mangle]
+pub extern "C" fn akapen_resolve_key(
+    ch: u32,
+    physical: i32,
+    primary: c_int,
+    shift: c_int,
+    alt: c_int,
+    composing: c_int,
+    text_editing: c_int,
+) -> i32 {
+    let input = akapen_core::KeyInput {
+        ch: char::from_u32(ch).filter(|c| *c != '\0'),
+        physical: physical_key_from_code(physical),
+        mods: akapen_core::Modifiers {
+            primary: primary != 0,
+            shift: shift != 0,
+            alt: alt != 0,
+        },
+        composing: composing != 0,
+        text_editing: text_editing != 0,
+    };
+    match akapen_core::resolve_key(input) {
+        Some(action) => action_to_code(action),
+        None => action_code::NONE,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,6 +823,45 @@ mod tests {
         akapen_enable_diagnostic_logging();
         akapen_enable_diagnostic_logging();
         assert!(log::max_level() >= log::LevelFilter::Warn);
+    }
+
+    #[test]
+    fn resolve_key_bridges_core_mapping() {
+        // 'p' bare -> pen tool (code 1).
+        assert_eq!(
+            akapen_resolve_key('p' as u32, 1, 0, 0, 0, 0, 0),
+            action_code::TOOL_PEN
+        );
+        // Cmd+Z -> undo (code 10).
+        assert_eq!(
+            akapen_resolve_key('z' as u32, 11, 1, 0, 0, 0, 0),
+            action_code::UNDO
+        );
+        // Cmd+Shift+Z -> redo (code 11).
+        assert_eq!(
+            akapen_resolve_key('z' as u32, 11, 1, 1, 0, 0, 0),
+            action_code::REDO
+        );
+        // Physical-only fallback: no char, physical Minus + shift -> right rotate.
+        assert_eq!(
+            akapen_resolve_key(0, 17, 0, 1, 0, 0, 0),
+            action_code::ROTATE_RIGHT
+        );
+        // PageDown (physical 20, no char) -> next frame.
+        assert_eq!(
+            akapen_resolve_key(0, 20, 0, 0, 0, 0, 0),
+            action_code::NEXT_FRAME
+        );
+        // IME guard: composing swallows everything.
+        assert_eq!(
+            akapen_resolve_key('p' as u32, 1, 0, 0, 0, 1, 0),
+            action_code::NONE
+        );
+        // Cmd+O is left to the menu (not stolen).
+        assert_eq!(
+            akapen_resolve_key('o' as u32, 6, 1, 0, 0, 0, 0),
+            action_code::NONE
+        );
     }
 
     #[test]
