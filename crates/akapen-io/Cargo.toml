@@ -8,3 +8,6 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+# Image decode for png/jpg/webp/bmp backgrounds (spec §4.1). Pure-Rust default
+# features keep the core cross-compilable; rationale documented in README.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp"] }

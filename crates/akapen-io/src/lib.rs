@@ -7,8 +7,17 @@
 //! target (spec §4.3), and cross-platform path normalization (spec §7.3,
 //! ported from `lib/annotate-target.js`).
 //!
-//! M0 ships only the sequence-token helper as a first, tested slice; the rest
-//! are placeholders implemented in M1+.
+//! M1 adds: RGBA decode adapters ([`decode`]), the `_review/` output target
+//! and collision-free naming ([`output`]), and forward/back sequence
+//! resolution over a directory listing ([`sequence`]).
+
+pub mod decode;
+pub mod output;
+pub mod sequence;
+
+pub use decode::{decode_rgba, DecodedImage};
+pub use output::{OutputNaming, ReviewTarget};
+pub use sequence::{list_images, neighbor, Direction};
 
 /// Increments the trailing digit run of a filename stem, preserving zero
 /// padding and any prefix (spec §4.5). Returns `None` when there is no digit
@@ -40,6 +49,34 @@ pub fn next_sequence_name(stem: &str) -> Option<String> {
     Some(format!("{prefix}{next:0width$}{suffix}"))
 }
 
+/// Decrements the trailing digit run of a filename stem, preserving zero
+/// padding and any prefix (spec §4.5). Returns `None` when there is no digit
+/// run, or when the value is already `0` (no previous frame).
+pub fn prev_sequence_name(stem: &str) -> Option<String> {
+    let bytes = stem.as_bytes();
+    let mut end = bytes.len();
+    while end > 0 && !bytes[end - 1].is_ascii_digit() {
+        end -= 1;
+    }
+    if end == 0 {
+        return None;
+    }
+    let mut start = end;
+    while start > 0 && bytes[start - 1].is_ascii_digit() {
+        start -= 1;
+    }
+    let prefix = &stem[..start];
+    let digits = &stem[start..end];
+    let suffix = &stem[end..];
+    let width = digits.len();
+    let value: u128 = digits.parse().ok()?;
+    if value == 0 {
+        return None;
+    }
+    let prev = value - 1;
+    Some(format!("{prefix}{prev:0width$}{suffix}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +101,21 @@ mod tests {
     #[test]
     fn no_digits_returns_none() {
         assert_eq!(next_sequence_name("cover"), None);
+    }
+
+    #[test]
+    fn prev_decrements_and_preserves_padding() {
+        assert_eq!(prev_sequence_name("c002").as_deref(), Some("c001"));
+        assert_eq!(prev_sequence_name("0010").as_deref(), Some("0009"));
+        assert_eq!(
+            prev_sequence_name("cut10_0005").as_deref(),
+            Some("cut10_0004")
+        );
+    }
+
+    #[test]
+    fn prev_at_zero_or_no_digits_is_none() {
+        assert_eq!(prev_sequence_name("c000"), None);
+        assert_eq!(prev_sequence_name("cover"), None);
     }
 }
