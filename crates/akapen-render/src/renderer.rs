@@ -46,6 +46,13 @@ pub fn surface_configuration(
         height,
         present_mode,
         desired_maximum_frame_latency: DEFAULT_MAX_FRAME_LATENCY,
+        // `Auto` (not e.g. `Opaque`/`PreMultiplied`) on purpose, including
+        // for the WinUI3 SwapChainPanel composition-swapchain path: a
+        // composition swapchain (`CreateSwapChainForComposition`) has no
+        // monitor identity of its own, so HDR/wide-gamut negotiation (which
+        // depends on that identity) is not available regardless of the
+        // alpha mode chosen here — letting wgpu pick avoids hand-picking a
+        // mode the backend may not actually support.
         alpha_mode: wgpu::CompositeAlphaMode::Auto,
         view_formats: vec![],
     }

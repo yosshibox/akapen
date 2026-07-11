@@ -39,9 +39,12 @@ pub enum SurfaceKind {
     /// `wgpu::SurfaceTargetUnsafe::SwapChainPanel(*mut c_void)` variant
     /// (confirmed against the vendored `wgpu-30.0.0`/`wgpu-hal-30.0.0`
     /// source and the C 節 reconnaissance in `docs/開発日誌.md`): passing it
-    /// to `Instance::create_surface_unsafe` internally does
-    /// `IDXGIFactory2::CreateSwapChainForComposition` followed by
-    /// `ISwapChainPanelNative::SetSwapChain`. No new dependency on
+    /// to `Instance::create_surface_unsafe` only stashes the handle —
+    /// the actual `IDXGIFactory2::CreateSwapChainForComposition` /
+    /// `ISwapChainPanelNative::SetSwapChain` calls happen lazily, inside
+    /// `wgpu::Surface::configure` (so a failure there surfaces through the
+    /// existing [`RendererError::SurfaceConfigure`] path, not through
+    /// `create_surface_unsafe`'s own `Result`). No new dependency on
     /// `wgpu-hal`/`wgpu-core` (or reaching for a raw `ID3D12Device`) is
     /// needed. [`create`] therefore forwards `desc.handle` — which the
     /// caller must have already `QueryInterface`'d from the XAML
@@ -100,13 +103,12 @@ pub unsafe fn create(
     let raw_window_handle = match desc.kind {
         SurfaceKind::MetalLayer => {
             let ns_view = NonNull::new(desc.handle)
-                .ok_or(RendererError::UnsupportedSurfaceKind("null NSView handle"))?;
+                .ok_or(RendererError::InvalidSurfaceHandle("null NSView handle"))?;
             RawWindowHandle::AppKit(raw_window_handle::AppKitWindowHandle::new(ns_view))
         }
         SurfaceKind::Hwnd => {
-            let hwnd = core::num::NonZeroIsize::new(desc.handle as isize).ok_or(
-                RendererError::UnsupportedSurfaceKind("null/zero HWND handle"),
-            )?;
+            let hwnd = core::num::NonZeroIsize::new(desc.handle as isize)
+                .ok_or(RendererError::InvalidSurfaceHandle("null/zero HWND handle"))?;
             RawWindowHandle::Win32(raw_window_handle::Win32WindowHandle::new(hwnd))
         }
         SurfaceKind::SwapChainPanel => unreachable!("returned above"),
@@ -141,13 +143,27 @@ pub unsafe fn create(
 /// # Safety
 /// Same contract as [`create`]: `desc.handle` must be a valid, non-null
 /// `ISwapChainPanelNative*` for the lifetime of the returned `Surface`.
+///
+/// # COM pointer contract
+/// `desc.handle` must be a pointer the WinUI/XAML shell obtained by calling
+/// `QueryInterface(IID_ISwapChainPanelNative, ...)` on the live
+/// `SwapChainPanel` object — never a raw `SwapChainPanel*`/`IUnknown*` cast.
+/// `QueryInterface` returns an already-`AddRef`'d pointer, and the shell
+/// retains that one reference for as long as this handle is in use; this
+/// function does not `AddRef`/`Release` it itself. The XAML `SwapChainPanel`
+/// object (and therefore this interface pointer) must stay alive until after
+/// the returned `wgpu::Surface` is dropped — dropping it first would leave
+/// `Surface` holding a dangling `ISwapChainPanelNative*`. Attach/resize/
+/// draw/detach for this surface must all happen on the WinUI UI thread (the
+/// same thread the `SwapChainPanel` itself is affine to); this function does
+/// not marshal across threads.
 #[cfg(target_os = "windows")]
 unsafe fn create_swap_chain_panel(
     instance: &wgpu::Instance,
     desc: SurfaceDesc,
 ) -> Result<wgpu::Surface<'static>, RendererError> {
     if desc.handle.is_null() {
-        return Err(RendererError::UnsupportedSurfaceKind(
+        return Err(RendererError::InvalidSurfaceHandle(
             "null ISwapChainPanelNative handle",
         ));
     }
@@ -181,6 +197,11 @@ unsafe fn create_swap_chain_panel(
 mod tests {
     use super::*;
 
+    /// Non-Windows (or dx12-feature-disabled): `SwapChainPanel` itself is not
+    /// backed by wgpu on this build/target at all, regardless of handle
+    /// validity, so this is `UnsupportedSurfaceKind` rather than
+    /// `InvalidSurfaceHandle`.
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn swap_chain_panel_is_reported_unsupported_not_silently_ignored() {
         let instance = crate::instance::create_instance();
@@ -204,10 +225,13 @@ mod tests {
     /// returns) — i.e. the wgpu-API wiring is live, not just a stub. Actually
     /// presenting through a real `ISwapChainPanelNative` needs a WinUI/XAML
     /// host (Session 1 GUI de-risk, tracked in `docs/開発日誌.md`), so this
-    /// only exercises the reachable-but-null-handle guard.
+    /// only exercises the reachable-but-null-handle guard. `SwapChainPanel`
+    /// *is* a supported kind here (unlike the non-Windows build) — a null
+    /// handle for it is a bad *value*, not an unsupported *kind*, hence
+    /// `InvalidSurfaceHandle` rather than `UnsupportedSurfaceKind`.
     #[cfg(target_os = "windows")]
     #[test]
-    fn swap_chain_panel_null_handle_is_rejected_by_the_dx12_branch_specifically() {
+    fn swap_chain_panel_null_handle_is_rejected() {
         let instance = crate::instance::create_instance();
         let desc = SurfaceDesc {
             kind: SurfaceKind::SwapChainPanel,
@@ -220,13 +244,13 @@ mod tests {
         // SAFETY: handle is null and never dereferenced (rejected up front).
         let err = unsafe { create(&instance, desc) }.unwrap_err();
         match err {
-            RendererError::UnsupportedSurfaceKind(msg) => {
+            RendererError::InvalidSurfaceHandle(msg) => {
                 assert!(
                     msg.contains("ISwapChainPanelNative"),
                     "expected the DX12-branch-specific null-handle message, got: {msg}"
                 );
             }
-            other => panic!("expected UnsupportedSurfaceKind, got {other:?}"),
+            other => panic!("expected InvalidSurfaceHandle, got {other:?}"),
         }
     }
 
@@ -243,6 +267,6 @@ mod tests {
         };
         // SAFETY: a null handle is rejected before any dereference.
         let err = unsafe { create(&instance, desc) }.unwrap_err();
-        assert!(matches!(err, RendererError::UnsupportedSurfaceKind(_)));
+        assert!(matches!(err, RendererError::InvalidSurfaceHandle(_)));
     }
 }

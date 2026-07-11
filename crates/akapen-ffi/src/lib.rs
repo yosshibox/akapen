@@ -401,7 +401,12 @@ impl log::Log for StderrLogger {
     }
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            eprintln!("[akapen:{}] {}: {}", record.level(), record.target(), record.args());
+            eprintln!(
+                "[akapen:{}] {}: {}",
+                record.level(),
+                record.target(),
+                record.args()
+            );
         }
     }
     fn flush(&self) {}
@@ -803,7 +808,10 @@ mod tests {
             assert_eq!(akapen_render_attach(e, &desc), 4);
 
             let need = akapen_render_last_attach_error(e, std::ptr::null_mut(), 0);
-            assert!(need > 1, "expected a non-empty error message, got len {need}");
+            assert!(
+                need > 1,
+                "expected a non-empty error message, got len {need}"
+            );
             let mut buf: Vec<c_char> = vec![0; need];
             let got = akapen_render_last_attach_error(e, buf.as_mut_ptr(), buf.len());
             assert_eq!(got, need);
@@ -824,10 +832,7 @@ mod tests {
         unsafe {
             // No GPU surface attached (headless/CI or CPU-only path): the
             // probe must report "nothing to show" rather than crash.
-            assert_eq!(
-                akapen_render_backend_info(e, std::ptr::null_mut(), 0),
-                0
-            );
+            assert_eq!(akapen_render_backend_info(e, std::ptr::null_mut(), 0), 0);
             akapen_free(e);
         }
     }

@@ -19,9 +19,20 @@ pub enum RendererError {
     /// Creating an OS surface from a [`crate::surface::SurfaceDesc`] failed.
     CreateSurface(wgpu::CreateSurfaceError),
     /// The requested [`crate::surface::SurfaceKind`] is not backed by a
-    /// standard wgpu `Surface` (raw window/display handle) attach path.
-    /// See [`crate::surface::SurfaceKind::SwapChainPanel`] doc comment.
+    /// standard wgpu `Surface` (raw window/display handle) attach path on
+    /// this build/target (e.g. `SwapChainPanel` on a non-Windows or
+    /// dx12-feature-disabled build). See
+    /// [`crate::surface::SurfaceKind::SwapChainPanel`] doc comment.
     UnsupportedSurfaceKind(&'static str),
+    /// The [`crate::surface::SurfaceKind`] *is* supported on this
+    /// build/target, but the native handle given in
+    /// [`crate::surface::SurfaceDesc::handle`] is invalid (null/zero) for it.
+    /// Kept distinct from [`Self::UnsupportedSurfaceKind`], which is about
+    /// the *kind* not being backed at all on this target — this variant is
+    /// about a bad *value* for a kind that is otherwise fine (the Metal/HWND/
+    /// SwapChainPanel null-handle checks in [`crate::surface::create`] all
+    /// return this).
+    InvalidSurfaceHandle(&'static str),
     /// `wgpu::Surface::configure` reported a validation error through the
     /// device's uncaptured-error handler (see
     /// [`crate::canvas::SurfaceRenderer::new`]). Note this is *not* the same
@@ -42,6 +53,9 @@ impl fmt::Display for RendererError {
             RendererError::CreateSurface(e) => write!(f, "failed to create surface: {e}"),
             RendererError::UnsupportedSurfaceKind(reason) => {
                 write!(f, "unsupported surface kind: {reason}")
+            }
+            RendererError::InvalidSurfaceHandle(reason) => {
+                write!(f, "invalid native handle: {reason}")
             }
             RendererError::SurfaceConfigure(msg) => {
                 write!(f, "surface configure failed: {msg}")

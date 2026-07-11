@@ -11,7 +11,10 @@ authors.workspace = true
 akapen-core = { path = "../akapen-core" }
 # wgpu: latest stable at implementation time (crates.io, 2026-07-11), pinned
 # exactly so the render pipeline doesn't drift under us mid-development.
-wgpu = "=30.0.0"
+# dx12 feature is explicit (not relying on the default-feature set) so the
+# WinUI3 SwapChainPanel path (cfg windows) doesn't silently break if wgpu's
+# defaults ever change.
+wgpu = { version = "=30.0.0", features = ["dx12"] }
 # raw-window-handle version wgpu 30 itself depends on (see its Cargo.toml);
 # kept in sync rather than chosen independently, per spec instructions.
 raw-window-handle = "0.6"
