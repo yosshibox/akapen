@@ -59,28 +59,52 @@ canonical home of that spec).
 ### Repository layout
 
 ```
-crates/akapen-core   drawing core: stroke model, coordinate transforms, vector JSON schema
-crates/akapen-io     I/O helpers: sequence detection, output naming, path normalization (scaffold)
+crates/akapen-core   drawing engine: stroke model, brush/pressure curve, CPU raster + incremental bake,
+                     undo/redo, coordinate transforms, vector JSON schema, 3-file export
+crates/akapen-io     I/O: image decode (png/jpg/webp/bmp), _review/ output naming, sequence next/prev
+crates/akapen-ffi    C ABI (libakapen) — the surface every language binding wraps (include/akapen.h)
 bindings/{swift,dotnet,node,wasm}   binding scaffolds (implemented from M1/M5)
-apps/mac             SwiftUI shell scaffold (implemented in M1)
+apps/mac             SwiftUI shell (M1): open → draw with pressure → save 3-file set → next/prev
 docs/                specification (canonical copy)
 testdata/            test vectors ported from the VEDA reference implementation
 ```
 
 ## Build
 
-Requires a Rust toolchain (developed against cargo 1.83).
+Requires a Rust toolchain (developed against Rust 1.97; the `image` crate pulls
+transitive deps needing edition-2024, so use a recent stable).
 
 ```bash
-cargo test      # build the core + I/O crates and run all unit tests
-cargo build     # build the workspace
+cargo test               # build all crates and run the unit tests (108 as of M1)
+cargo build              # build the workspace (produces target/debug/libakapen.a)
 ```
 
-> **CI note:** at the time this skeleton was authored the workspace was built
-> and tested locally (`cargo test`, all green). The GitHub Actions workflow
-> runs `cargo build` + `cargo test` on macOS / Linux / Windows and holds
-> placeholder jobs for the three binding faces (Swift / .NET / Node) so the
-> "tri-face build always on" discipline (spec §9) is in place from M0.
+### mac shell (M1)
+
+```bash
+cargo build -p akapen-ffi          # produce the C ABI static lib first
+cd apps/mac
+swift build                        # build the SwiftUI app + the FFI harness
+swift run AkapenApp                # launch the review window
+swift run akapen-harness /tmp/out  # headless: draw pressure strokes + write the 3-file export
+```
+
+The SwiftUI shell opens an image (⌘O or drag-drop), captures NSEvent tablet
+pressure, lets you draw red / erase, zoom (⌘-scroll / pinch), pan (Space-drag),
+undo/redo, and saves the 3-file set into `<input folder>/_review/` (⌘S), then
+steps through the sequence with ◀ / ▶. The `akapen-harness` executable proves
+the Swift↔Rust boundary and the whole draw→bake→save pipeline without a GUI.
+
+### Third-party dependency rationale
+
+- **`png`** (core export) and **`image`** (io decode) are the de-facto pure-Rust
+  codecs; pure-Rust default features keep the core cross-compilable for the
+  tri-face build discipline (spec §8.2). Both are permissive-licensed.
+
+> **CI:** GitHub Actions runs `cargo build` + `cargo test` + `clippy` on
+> macOS / Linux / Windows, and a `mac-shell` job that builds the Rust C ABI,
+> compiles the SwiftUI shell, and runs the FFI harness asserting the 3-file
+> export — keeping the "tri-face build always on" discipline (spec §9) real.
 
 ## Pressure / 筆圧
 

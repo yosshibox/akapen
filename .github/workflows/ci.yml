@@ -39,13 +39,31 @@ jobs:
   # exercised so UI dependencies cannot leak into the core. At M0 these are
   # placeholders that assert the scaffold exists; they become real generate +
   # build steps as bindings land (Swift M1, .NET M2, Node M5).
-  bindings-swift:
-    name: bindings / swift (placeholder)
+  # mac shell: build the Rust C ABI static lib, then compile the SwiftUI shell
+  # (AkapenApp) and the headless FFI proof harness against it. This exercises
+  # the Swift↔Rust boundary on every push (spec §9 "tri-face build discipline").
+  mac-shell:
+    name: mac shell (swift + ffi)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Placeholder — swift binding face present
-        run: test -f bindings/swift/../README.md && echo "swift binding scaffold present"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Build Rust C ABI (libakapen.a)
+        run: cargo build -p akapen-ffi
+      - name: Build the mac shell + harness
+        run: swift build
+        working-directory: apps/mac
+      - name: Run the FFI proof harness (draw + 3-file export)
+        run: swift run akapen-harness "$RUNNER_TEMP/akapen-review"
+        working-directory: apps/mac
+      - name: Assert the 3-file export exists
+        run: |
+          test -f "$RUNNER_TEMP/akapen-review/harness.review.png"
+          test -f "$RUNNER_TEMP/akapen-review/harness.strokes.png"
+          test -f "$RUNNER_TEMP/akapen-review/harness.strokes.json"
 
   bindings-dotnet:
     name: bindings / dotnet (placeholder)
