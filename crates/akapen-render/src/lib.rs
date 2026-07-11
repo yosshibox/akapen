@@ -28,6 +28,7 @@ pub mod canvas;
 pub mod error;
 pub(crate) mod instance;
 pub mod renderer;
+pub mod startup;
 pub mod stroke;
 pub mod surface;
 #[cfg(test)]
@@ -39,5 +40,8 @@ pub use bake::{apply_bake_delta, composite_frame, plan_bake, BakePlan, BakedText
 pub use canvas::{GpuCanvas, SurfaceRenderer};
 pub use error::RendererError;
 pub use renderer::{OffscreenTarget, Renderer, OFFSCREEN_FORMAT};
+pub use startup::{
+    run_headless_cold_start, run_headless_cold_start_blocking, COLD_START_SPANS_IN_ORDER,
+};
 pub use stroke::StrokePipeline;
 pub use surface::{SurfaceDesc, SurfaceKind};
