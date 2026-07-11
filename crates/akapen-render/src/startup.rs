@@ -33,6 +33,7 @@ pub const SPAN_ADAPTER_REQUEST: &str = "adapter_request";
 pub const SPAN_DEVICE_REQUEST: &str = "device_request";
 pub const SPAN_SHADER_COMPILE_BACKGROUND: &str = "shader_compile_background";
 pub const SPAN_SHADER_COMPILE_STROKE: &str = "shader_compile_stroke";
+pub const SPAN_BACKGROUND_UPLOAD: &str = "background_upload";
 pub const SPAN_FIRST_BAKE: &str = "first_bake";
 pub const SPAN_FIRST_OFFSCREEN_FRAME: &str = "first_offscreen_frame";
 
@@ -44,6 +45,7 @@ pub const COLD_START_SPANS_IN_ORDER: &[&str] = &[
     SPAN_DEVICE_REQUEST,
     SPAN_SHADER_COMPILE_BACKGROUND,
     SPAN_SHADER_COMPILE_STROKE,
+    SPAN_BACKGROUND_UPLOAD,
     SPAN_FIRST_BAKE,
     SPAN_FIRST_OFFSCREEN_FRAME,
 ];
@@ -62,7 +64,16 @@ pub const COLD_START_SPANS_IN_ORDER: &[&str] = &[
 /// existing headless path returns); callers follow this crate's
 /// established `AKAPEN_REQUIRE_GPU` skip/hard-fail convention
 /// ([`crate::test_support`]) at the call site.
-pub async fn run_headless_cold_start(trace: &mut StartupTrace) -> Result<Vec<u8>, RendererError> {
+///
+/// `background_size` is the `(width, height)` used for the
+/// [`SPAN_BACKGROUND_UPLOAD`] span: it stands in for "an image was opened"
+/// and lets a caller pass a representative size (e.g. a real canvas
+/// resolution) instead of a fixed 1x1 stub, so the recorded span reflects
+/// an actual texture allocation/upload cost rather than a near-zero one.
+pub async fn run_headless_cold_start(
+    trace: &mut StartupTrace,
+    background_size: (u32, u32),
+) -> Result<Vec<u8>, RendererError> {
     trace
         .begin(SPAN_INSTANCE_CREATE)
         .expect("cold start: duplicate span");
@@ -71,35 +82,41 @@ pub async fn run_headless_cold_start(trace: &mut StartupTrace) -> Result<Vec<u8>
         .end(SPAN_INSTANCE_CREATE)
         .expect("cold start: end without begin");
 
+    // Each fallible await's result is captured into a local *before* `end`
+    // is called, and only mapped to an error / propagated with `?`
+    // afterwards. This keeps the span panic/error-safe: an early `?` return
+    // can no longer skip `end` and leave the span open (review finding:
+    // early-return via `?` used to bypass `end` and surface as
+    // `UnclosedSpans` instead of the real adapter/device error).
     trace
         .begin(SPAN_ADAPTER_REQUEST)
         .expect("cold start: duplicate span");
-    let adapter = instance
+    let adapter_result = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),
             force_fallback_adapter: false,
             compatible_surface: None,
             apply_limit_buckets: false,
         })
-        .await
-        .map_err(|_| RendererError::NoAdapter)?;
+        .await;
     trace
         .end(SPAN_ADAPTER_REQUEST)
         .expect("cold start: end without begin");
+    let adapter = adapter_result.map_err(|_| RendererError::NoAdapter)?;
 
     trace
         .begin(SPAN_DEVICE_REQUEST)
         .expect("cold start: duplicate span");
-    let (device, queue) = adapter
+    let device_result = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("akapen-render cold-start headless device"),
             ..Default::default()
         })
-        .await
-        .map_err(RendererError::RequestDevice)?;
+        .await;
     trace
         .end(SPAN_DEVICE_REQUEST)
         .expect("cold start: end without begin");
+    let (device, queue) = device_result.map_err(RendererError::RequestDevice)?;
 
     let renderer = Renderer {
         instance,
@@ -111,7 +128,12 @@ pub async fn run_headless_cold_start(trace: &mut StartupTrace) -> Result<Vec<u8>
     // Shader compilation: one span per pipeline, mirroring the two
     // pipelines the real cold-start path builds before any drawing can
     // happen (background quad + wet-ink/bake stroke pipeline). Built for
-    // OFFSCREEN_FORMAT since this is the headless path (no swapchain).
+    // OFFSCREEN_FORMAT since this is the headless path (no swapchain) — the
+    // *screen* path ([`crate::canvas::GpuCanvas::attach`]) creates its own,
+    // separate `BackgroundPipeline`/`StrokePipeline` instances against the
+    // swapchain's surface format for on-screen draws, plus a second
+    // `StrokePipeline` for its own bake target; the two spans below measure
+    // only the headless pipelines built here, not those screen/bake ones.
     trace
         .begin(SPAN_SHADER_COMPILE_BACKGROUND)
         .expect("cold start: duplicate span");
@@ -129,17 +151,26 @@ pub async fn run_headless_cold_start(trace: &mut StartupTrace) -> Result<Vec<u8>
         .end(SPAN_SHADER_COMPILE_STROKE)
         .expect("cold start: end without begin");
 
-    // A tiny 1x1 opaque-white background stands in for "an image was
-    // opened" — this path measures pipeline/bake/first-frame cost, not
-    // image-decode cost (out of scope, see module doc).
-    let background_rgba = [255u8, 255, 255, 255];
+    // Background upload: the real cost of "an image was opened" — texture
+    // allocation + the RGBA transfer into it. `background_size` lets a
+    // caller pass a representative size (real canvas resolution) instead of
+    // a fixed 1x1 stub, so this span measures an actual upload rather than
+    // a near-zero one. Content is opaque white; only the size affects cost.
+    let (background_width, background_height) = background_size;
+    let background_rgba = vec![255u8; background_width as usize * background_height as usize * 4];
+    trace
+        .begin(SPAN_BACKGROUND_UPLOAD)
+        .expect("cold start: duplicate span");
     let background = background_pipeline.set_background(
         &renderer.device,
         &renderer.queue,
         &background_rgba,
-        1,
-        1,
+        background_width,
+        background_height,
     );
+    trace
+        .end(SPAN_BACKGROUND_UPLOAD)
+        .expect("cold start: end without begin");
 
     // First bake: one committed stroke gets baked into a fresh baked_tex —
     // the same "commit -> Rebuild" path `crate::canvas::GpuCanvas::attach`
@@ -171,6 +202,15 @@ pub async fn run_headless_cold_start(trace: &mut StartupTrace) -> Result<Vec<u8>
         &bake_view,
         wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
     );
+    // `draw` above only records+submits the GPU commands; without waiting
+    // for that submit to actually finish, the real bake cost would leak
+    // into (and be double-counted, or misattributed to) the next span
+    // instead of being attributed here (review finding: bake completion
+    // wasn't awaited before `end`).
+    renderer
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("device poll failed while waiting for first_bake to complete");
     trace
         .end(SPAN_FIRST_BAKE)
         .expect("cold start: end without begin");
@@ -209,8 +249,9 @@ pub async fn run_headless_cold_start(trace: &mut StartupTrace) -> Result<Vec<u8>
 /// sites (tests, and any future CLI-style measurement tool).
 pub fn run_headless_cold_start_blocking(
     trace: &mut StartupTrace,
+    background_size: (u32, u32),
 ) -> Result<Vec<u8>, RendererError> {
-    pollster::block_on(run_headless_cold_start(trace))
+    pollster::block_on(run_headless_cold_start(trace, background_size))
 }
 
 #[cfg(test)]
@@ -220,29 +261,48 @@ mod tests {
     /// Session 0 regression (spec 4b): runs the real cold headless path
     /// once and fixes that every span in [`COLD_START_SPANS_IN_ORDER`] gets
     /// recorded, in that exact order — no absolute-duration threshold, only
-    /// the *shape* of the trace. Skips cleanly (or hard-fails under
-    /// `AKAPEN_REQUIRE_GPU=1`) with no GPU adapter, per this crate's
-    /// established convention.
+    /// the *shape* of the trace.
+    ///
+    /// Deliberately does **not** pre-warm via
+    /// [`crate::test_support::try_headless_renderer`] first (review finding:
+    /// bringing up a throwaway `Renderer` just to probe adapter availability
+    /// warms driver/shader caches before the "cold" run, undermining the
+    /// point of measuring a cold path). Instead this calls
+    /// [`run_headless_cold_start_blocking`] directly and interprets its own
+    /// `NoAdapter`/`RequestDevice` error as the skip/hard-fail signal,
+    /// following this crate's `AKAPEN_REQUIRE_GPU` convention
+    /// ([`crate::test_support`]) without instantiating a prior renderer.
     #[test]
     fn cold_start_records_every_span_in_order_on_a_real_headless_gpu_path() {
-        if crate::test_support::try_headless_renderer(
-            "cold_start_records_every_span_in_order_on_a_real_headless_gpu_path",
-        )
-        .is_none()
-        {
-            return;
-        }
-
         let mut trace = StartupTrace::new_with_system_clock();
-        let result = run_headless_cold_start_blocking(&mut trace);
-        let pixels = result.expect(
-            "run_headless_cold_start failed even though a headless renderer was just \
-             confirmed available",
-        );
+        let result = run_headless_cold_start_blocking(&mut trace, (64, 64));
+        let pixels = match result {
+            Ok(pixels) => pixels,
+            Err(e) => {
+                if std::env::var_os("AKAPEN_REQUIRE_GPU").as_deref()
+                    == Some(std::ffi::OsStr::new("1"))
+                {
+                    panic!(
+                        "AKAPEN_REQUIRE_GPU=1 が設定されているのに \
+                         cold_start_records_every_span_in_order_on_a_real_headless_gpu_path \
+                         用の GPU アダプタ/デバイスが取得できなかった({e})。このレーンでは動的\
+                         スキップを許さず、GPU描画が実機で検証されないまま緑になることを防ぐ"
+                    );
+                }
+                eprintln!(
+                    "skipping cold_start_records_every_span_in_order_on_a_real_headless_gpu_path: \
+                     no GPU adapter/device available in this environment ({e}); expected on \
+                     headless CI without a GPU or software rasterizer. Set AKAPEN_REQUIRE_GPU=1 \
+                     to make this a hard failure instead of a skip."
+                );
+                return;
+            }
+        };
         assert_eq!(
             pixels.len(),
             4,
-            "1x1 RGBA8 readback must be exactly 4 bytes"
+            "1x1 RGBA8 readback must be exactly 4 bytes (background_size only affects the \
+             background_upload span, not the offscreen target's own 1x1 size)"
         );
 
         let spans = trace.finish().expect("cold start left an unclosed span");
