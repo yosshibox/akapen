@@ -93,22 +93,74 @@ This project (`apps/windows`), by contrast, is the real M2 shell:
   pointer handlers + the palm gate see it — the WinUI analogue of the mac
   shell's `allowedTouchTypes = [.direct]`.
 
-## Not yet in scope (future M2 chapters)
+## In scope this chapter (M2-D)
+
+- **Toolbar tool switcher** (`Pen` / `Eraser`): two `ToggleButton`s with
+  code-behind mutual exclusion. Clicking the already-active tool re-selects
+  it rather than leaving no tool active (WinUI's default toggle behavior).
+  Extra tools (`Line` / `Arrow` / `Rect` / `Ellipse` / `Text`) exist in the
+  FFI but are M3 UI scope.
+- **Toolbar undo / redo** (`Undo`, `Redo`) with `Ctrl+Z` /
+  `Ctrl+Y` + macOS-idiom `Ctrl+Shift+Z` KeyboardAccelerators. Both buttons
+  gate on `_engine != IntPtr.Zero` (enabled when an image is loaded,
+  disabled when none is), same shape as `SaveButton`.
+- **Right-hand SidePanel** (192 DIP fixed width, `Grid.Column=1` next to
+  the SwapChainPanel):
+  - **Size slider** (`Minimum=1` / `Maximum=50` / `Value=10`,
+    `StepFrequency=1`), with a live "N px" readout right of the label.
+    Fires `akapen_set_size` on every `ValueChanged`. `[` / `]` shortcuts
+    step ±1 via a code-behind handler that writes back through the Slider
+    (so thumb + readout + engine stay in sync from one place).
+  - **10-swatch MS Paint palette** (`PaletteColors.cs`; MS Paint 上段: 黒,
+    グレー50%, 暗い赤, **赤 #ED1C24 (既定)**, オレンジ, 黄, 緑, ターコイズ,
+    インディゴ, 紫). Rendered as two rows of five 26x26 buttons built in
+    code from the `PaletteColors.Colors` list so a palette swap only
+    touches one file. Each swatch carries `AutomationProperties.Name` +
+    tooltip = the color's Japanese name. The selected swatch is
+    highlighted with a thick white border.
+- **Deferred-apply pattern**: `_currentTool` / `_currentColorRgba` /
+  `_currentSize` fields hold the shell's current pose. Every UI change
+  updates the field first and then calls `ApplyToolStateToEngine()`, which
+  is a silent no-op while `_engine == IntPtr.Zero`. On `LoadImage` after
+  `akapen_open_image` returns, `ApplyToolStateToEngine()` runs once to seed
+  the fresh engine with the shell's current pose — so tool state survives
+  across image opens, matching `AppState.applyToolState` on mac
+  (`apps/mac/Sources/AkapenApp/AppState.swift`). The opening pose (Pen /
+  MS Paint 赤 / 10 px) is set by the field initializers and mirrored in
+  XAML defaults (PenToolButton `IsChecked=True`, Slider `Value=10`).
+- **Single-key shortcuts** (spec §3 主要行の先取り): `P` = Pen, `E` = Eraser,
+  `[` = size –1, `]` = size +1. Registered programmatically on `RootGrid`
+  in `MainWindow.xaml.cs::RegisterGlobalAccelerators` — `[` / `]` map to
+  VirtualKey `0xDB` / `0xDD` (VK_OEM_4 / VK_OEM_6), which
+  `Windows.System.VirtualKey` has no named members for, so XAML can't
+  spell them and code-behind registration is the only option. The full
+  spec §3 table (routed through `akapen_resolve_key` so both shells share
+  one map) is M3.
+
+## Not yet in scope (future M2 / M3 chapters)
 
 - **M2-B2**: Wintab (WACOM's native API), the second pen path for drivers
   with "Windows Ink" turned off (spec §5.1). `akapen_palm_route` and the
   pointer-kind/pressure plumbing landed in M2-B1 above; only the Wintab
   fallback input source itself remains.
-- **M2-D**: Touch-driven canvas pan/pinch (the palm gate's `Navigate` routing
-  is wired up and reachable from M2-B1, but nothing consumes it yet beyond a
-  status-bar note), tool switcher (Pen/Eraser), color palette, size slider,
-  undo/redo buttons — the equivalent of `SidePanelView` on the mac shell.
+- **Touch-driven canvas pan/pinch** (the palm gate's `Navigate` routing is
+  wired up and reachable from M2-B1, but nothing consumes it yet beyond a
+  status-bar note). M3.
 - **M3**: Full shortcut table (spec §3), keyed off `akapen_resolve_key` so
-  the shortcut map stays in the core (mac and Windows share one table).
-  Also where the present pump graduates from a fixed-cadence
-  `DispatcherTimer` (started/stopped alongside the loaded engine, M2-A) to
-  an engine-dirty-flag-gated or compositor-synced pump, once real profiling
-  data says the fixed 16ms tick matters.
+  the shortcut map stays in the core (mac and Windows share one table);
+  M2-D 先取り済みの P / E / [ / ] / Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z /
+  Ctrl+S 以外の項目はここで統合する。Also where the present pump graduates
+  from a fixed-cadence `DispatcherTimer` (started/stopped alongside the
+  loaded engine, M2-A) to an engine-dirty-flag-gated or compositor-synced
+  pump, once real profiling data says the fixed 16ms tick matters.
+- **M3 refine**: SidePanel の hover-fade + フローティング化 (mac の
+  `SidePanelView` は `.overlay(alignment: .trailing)` の半透明パネルで、
+  ホバー時のみ opacity 0.4→0.97 に戻る)。M2-D は Grid の右列に固定配置
+  したので canvas を圧迫するが、実測で邪魔なら refine 対象。
+- **M3 tools**: Line / Arrow / Rect / Ellipse / Text ツール — FFI 側の
+  `AKAPEN_TOOL_*` 定数は既に定義済み、UI 側の追加待ち。
+- **M3 color picker**: 任意色ピッカ (WinUI `ColorPicker`) — M2-D は
+  10-swatch 固定パレットのみ、mac 側の `ColorPicker` 相当は M3。
 - **Settings**: Output-dir mode + suffix configuration (spec §4.7),
   equivalent to `SettingsView.swift` on mac.
 - **MSIX packaging**: distributable artifact + auto-update. `WindowsPackageType`
@@ -205,7 +257,8 @@ failure (via `akapen_render_last_attach_error`).
 AkapenApp/
 ├─ AkapenApp.csproj                # net8.0-windows10.0.19041.0, unpackaged
 ├─ App.xaml + .cs                  # WinUI Application entry, creates MainWindow
-├─ MainWindow.xaml + .cs           # Toolbar + SwapChainPanel + status bar
+├─ MainWindow.xaml + .cs           # Toolbar + SwapChainPanel + SidePanel + status bar
+├─ PaletteColors.cs                # MS Paint 10色パレット定義(1箇所集約)
 ├─ Interop/
 │  └─ SwapChainPanelNativeInterop.cs  # ISwapChainPanelNative QueryInterface
 └─ app.manifest                    # PerMonitorV2 DPI + Windows 10+ compat

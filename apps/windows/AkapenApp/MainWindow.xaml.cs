@@ -1,9 +1,10 @@
 // Akapen main window (spec §7.4-4 / §9 M2 — WinUI 3 shell; M2-A first-cut
-// scaffold, M2-B1 real pointer kind/pressure + palm rejection).
+// scaffold, M2-B1 real pointer kind/pressure + palm rejection, M2-D tool /
+// color / size / undo-redo UI).
 //
 // Responsibilities kept in this file (mirrors apps/mac/Sources/AkapenApp/
-// AppState.swift's role, folded into the window itself since M2-A has no
-// side panel yet):
+// AppState.swift + SidePanelView.swift, folded into the window itself since
+// we have no separate view-model layer at M2 scope):
 //   - Own the AkapenEngine handle for the current image.
 //   - Bring up the WinUI 3 SwapChainPanel as the wgpu render surface
 //     (spec §7.4-6) via the ISwapChainPanelNative COM interop in
@@ -18,22 +19,37 @@
 //     second route) is M2-B2.
 //   - Drive Open… (FileOpenPicker) and Save / Ctrl+S (akapen_export_to_dir).
 //   - Present one frame per DispatcherTimer tick via akapen_render_frame.
+//   - M2-D: hold the current tool (Pen/Eraser) / color (10-swatch MS Paint
+//     palette from PaletteColors.cs) / brush size, expose them via toolbar
+//     + right-hand SidePanel controls, and push to the engine on every UI
+//     change AND once per Open (deferred-apply pattern — mac's
+//     AppState.applyToolState). Undo / Redo sit on the toolbar with
+//     Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z accelerators. Single-key shortcuts
+//     P / E / [ / ] (spec §3 主要行の先取り) are registered
+//     programmatically on RootGrid because VirtualKey has no `Oem4`/`Oem6`
+//     names for `[`/`]`, so XAML cannot spell them directly.
 //
-// Deliberately not here (kept for later M2 chapters, called out in
+// Deliberately not here (kept for later M2/M3 chapters, called out in
 // apps/windows/README.md so nobody accidentally starts adding them):
 //   - Wintab (WACOM's native API, spec §5.1 second route, needed when a
 //     driver has "Windows Ink" turned off) — M2-B2.
 //   - Touch-driven canvas pan/pinch: the palm gate's Navigate routing is
 //     wired up and reachable (a deliberate touch with no pen in play), but
-//     nothing consumes it yet beyond a status-bar note — M2-D.
-//   - Tool switcher / color picker / size slider / undo-redo UI (M2-D).
+//     nothing consumes it yet beyond a status-bar note.
+//   - Tools other than Pen/Eraser (Line / Arrow / Rect / Ellipse / Text
+//     exist in the FFI, M3 UI scope).
+//   - Arbitrary-color picker (WinUI ColorPicker) — M3; M2-D only ships the
+//     10-swatch fixed palette.
+//   - Full spec §3 shortcut table via akapen_resolve_key (only the主要行
+//     P/E/[/]/Ctrl+Z/Ctrl+Y/Ctrl+Shift+Z/Ctrl+S先取り) — M3.
+//   - SidePanel の hover-fade / フローティング化 — M3 の refine 候補
+//     (README 参照)。M2-D は Grid の右列に固定配置。
 //   - Settings pane (spec §4.7) covering output dir mode + suffixes.
 //   - Zoom / pan / rotate remap (view scale != 1, non-zero rotation).
 //     PushPointerSample inverts the *centered, scale-1* placement
 //     OnPresentTick renders (panel DIP size <-> image pixel size), which
 //     holds across ordinary window resizes since both sides read the
-//     panel's live ActualWidth/Height; it does not attempt zoom/pan, which
-//     is M2-D scope.
+//     panel's live ActualWidth/Height; it does not attempt zoom/pan yet.
 //   - Frame stepping across sibling images.
 //
 // The engine handle is stored as IntPtr (mirrors apps/windows-probe's
@@ -57,10 +73,13 @@ using AkapenApp.Interop;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives; // RangeBaseValueChangedEventArgs
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Windows.Storage;
 using Windows.Storage.Pickers;
+using Windows.System; // VirtualKey / VirtualKeyModifiers
+using Windows.UI; // Color / Colors
 
 namespace AkapenApp;
 
@@ -145,6 +164,47 @@ public sealed partial class MainWindow : Window
     // reconfigure), the shell logs the initial value.
     private float _scaleFactor = 1.0f;
 
+    // ── M2-D tool state (deferred-apply) ───────────────────────────────────
+    // Shell-owned copies of the current tool / color / brush size. The UI
+    // updates these fields on every change and, if an engine is loaded,
+    // pushes them via akapen_set_tool/_color/_size. When no engine is loaded
+    // (before the first Open, or after Close) the update is silently held
+    // here and re-applied on the next Open — the "deferred-apply" pattern
+    // that mirrors the mac shell's AppState.applyToolState (called both on
+    // Open and on any tool/color/size change in AppState.swift). The
+    // opening pose (Pen / MS Paint 赤 #ED1C24 / 10 px): the color matches
+    // PaletteColors.Default. The brush-size *range* (1-50, see
+    // MinBrushSize/MaxBrushSize below and the Slider's Minimum/Maximum in
+    // MainWindow.xaml) matches the mac shell's SidePanel slider
+    // (apps/mac/Sources/AkapenApp/SidePanelView.swift, 1...50 mapping) —
+    // not its top ContentView slider, which spans 1...80
+    // (apps/mac/Sources/AkapenApp/ContentView.swift). The *default value*
+    // of 10 px is a Windows-shell-only starting pose, not a match with mac:
+    // AppState.swift's `brushSize` opens at 14
+    // (apps/mac/Sources/AkapenApp/AppState.swift:17), so the two shells do
+    // not open at the same size today (Codex Ch.9 review, Low). Whether to
+    // unify the two defaults is left to a later chapter. The XAML defaults
+    // (PenToolButton IsChecked=True, Slider Value=10) mirror this field so
+    // first paint shows the right chrome even before the shell finishes
+    // wiring up event handlers.
+    private int _currentTool = 0;                 // 0=Pen, 1=Eraser (akapen.h AKAPEN_TOOL_*)
+    private uint _currentColorRgba = PaletteColors.DefaultRgba; // 0xED1C24FF
+    private float _currentSize = 10.0f;           // Windows-shell default (mac opens at 14; see comment near the Slider max=50 for the range rationale)
+    private string? _currentColorHex = PaletteColors.Default.Hex; // for swatch highlight
+
+    // Backing collection for the color swatch buttons, so HighlightSelectedSwatch
+    // can walk them without a live UIElement search each time. Populated once
+    // in BuildColorSwatches at construction.
+    private readonly List<Button> _swatchButtons = new();
+
+    // Brush-size clamp (mirrors the Slider's Min/Max in MainWindow.xaml and the
+    // mac shell's minSize/maxSize in SidePanelView.swift). Kept as constants
+    // rather than reading Slider.Minimum/Maximum so the `[`/`]` accelerator
+    // handler can clamp before touching the Slider (which itself would clamp,
+    // but we also read _currentSize directly in ApplyToolStateToEngine).
+    private const float MinBrushSize = 1.0f;
+    private const float MaxBrushSize = 50.0f;
+
     public MainWindow()
     {
         this.InitializeComponent();
@@ -154,6 +214,11 @@ public sealed partial class MainWindow : Window
         // .34 SSH loop reads them there when a bring-up fails. Same call as
         // the probe (apps/windows-probe/AkapenProbe/Program.cs:53).
         NativeMethods.akapen_enable_diagnostic_logging();
+
+        // Populate the right-hand color palette from PaletteColors and register
+        // the single-key shortcuts (P / E / [ / ]) that XAML can't spell.
+        BuildColorSwatches();
+        RegisterGlobalAccelerators();
     }
 
     // ── SwapChainPanel lifecycle ───────────────────────────────────────────
@@ -570,24 +635,27 @@ public sealed partial class MainWindow : Window
             }
             engine = (IntPtr)raw;
             NativeMethods.akapen_size(raw, &w, &h);
-
-            // Default pose = red pen, 6 px. Mirrors the mac shell's opening
-            // pose (apps/mac/Sources/AkapenApp/AppState.swift's applyToolState
-            // + PaletteColors.defaultColor).
-            NativeMethods.akapen_set_tool(raw, tool: 0 /*Pen*/);
-            NativeMethods.akapen_set_color(raw, 0xFF0000FFu);
-            NativeMethods.akapen_set_size(raw, 6.0f);
         }
 
         _engine = engine;
         _currentPath = path;
         _imgWidth = w;
         _imgHeight = h;
+
+        // Push the shell-held tool / color / size (M2-D deferred-apply pattern
+        // — mirrors AppState.applyToolState on mac, called right after
+        // AkapenEngine init in AppState.open). On the very first Open this is
+        // PaletteColors.Default / 10 px / Pen; on subsequent Opens it's
+        // whatever the user last chose, so tool state survives across images.
+        ApplyToolStateToEngine();
+
         AttachSurfaceIfNeeded();
         // Now that there is something to draw, (re)start the present pump
         // (see the Loaded handler's Low2 note — idle-with-no-engine skips it).
         _presentTimer?.Start();
         SaveButton.IsEnabled = true;
+        UndoButton.IsEnabled = true;
+        RedoButton.IsEnabled = true;
         SetStatus($"{Path.GetFileName(path)} — {w}x{h}");
         // Fresh image, fresh read: a stuck-pressure warning from the previous
         // image shouldn't linger (mirrors AppState.open resetting
@@ -678,6 +746,8 @@ public sealed partial class MainWindow : Window
         _imgWidth = 0;
         _imgHeight = 0;
         SaveButton.IsEnabled = false;
+        UndoButton.IsEnabled = false;
+        RedoButton.IsEnabled = false;
     }
 
     // ── Save (Ctrl+S / Save button) ────────────────────────────────────────
@@ -757,5 +827,277 @@ public sealed partial class MainWindow : Window
     private void SetPressureWarning(bool warned)
     {
         PressureWarningText.Visibility = warned ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // ── M2-D: tool / color / size UI + undo/redo + shortcuts ───────────────
+    //
+    // Every UI change updates the shell-held _currentTool / _currentColorRgba /
+    // _currentSize field first, then hands off to ApplyToolStateToEngine which
+    // is a no-op while no engine is loaded (deferred apply — see the class doc
+    // block for why this pattern mirrors the mac shell's AppState).
+
+    /// <summary>
+    /// Builds the 10-swatch MS Paint palette into <c>ColorSwatchRoot</c> in code
+    /// so the XAML side owns only layout and PaletteColors.cs owns the color
+    /// values. Two horizontal rows of five swatches each. The initially
+    /// selected swatch (<see cref="_currentColorHex"/>) is visually highlighted.
+    /// </summary>
+    private void BuildColorSwatches()
+    {
+        const int perRow = 5;
+        StackPanel? row = null;
+        for (int i = 0; i < PaletteColors.Colors.Count; i++)
+        {
+            if (i % perRow == 0)
+            {
+                row = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 6,
+                };
+                ColorSwatchRoot.Children.Add(row);
+            }
+
+            var pc = PaletteColors.Colors[i];
+            // Fixed-size square Button: WinUI's default Button padding is too
+            // large for a swatch, so zero the padding/min-size out and rely on
+            // the explicit 26x26. `Tag` carries the PaletteColor struct so the
+            // click handler doesn't need a per-swatch capture closure.
+            var btn = new Button
+            {
+                Width = 26,
+                Height = 26,
+                MinWidth = 26,
+                MinHeight = 26,
+                Padding = new Thickness(0),
+                Background = new SolidColorBrush(pc.WinColor),
+                BorderBrush = new SolidColorBrush(Colors.Black),
+                BorderThickness = new Thickness(1),
+                Tag = pc,
+            };
+            ToolTipService.SetToolTip(btn, pc.Name);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(btn, pc.Name);
+            btn.Click += OnColorSwatchClick;
+
+            row!.Children.Add(btn);
+            _swatchButtons.Add(btn);
+        }
+
+        HighlightSelectedSwatch();
+    }
+
+    /// <summary>
+    /// Walks every swatch button and re-paints its border to indicate whether
+    /// it matches <see cref="_currentColorHex"/>. Called after every color
+    /// change (including the initial build) so the highlight stays honest.
+    /// </summary>
+    private void HighlightSelectedSwatch()
+    {
+        foreach (var btn in _swatchButtons)
+        {
+            bool selected = btn.Tag is PaletteColor pc && pc.Hex == _currentColorHex;
+            btn.BorderBrush = new SolidColorBrush(selected ? Colors.White : Colors.Black);
+            btn.BorderThickness = new Thickness(selected ? 3 : 1);
+        }
+    }
+
+    private void OnColorSwatchClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not PaletteColor pc) return;
+        _currentColorRgba = pc.Rgba;
+        _currentColorHex = pc.Hex;
+        HighlightSelectedSwatch();
+        ApplyToolStateToEngine();
+    }
+
+    /// <summary>
+    /// Pen tool click. The XAML default IsChecked=True on PenToolButton and
+    /// false on EraserToolButton means the very first paint shows Pen already
+    /// pressed; this handler ensures repeated clicks on Pen keep Pen selected
+    /// (ToggleButton's default "click-again toggles off" would otherwise leave
+    /// no tool active).
+    /// </summary>
+    private void OnPenToolClick(object sender, RoutedEventArgs e) => SelectTool(0);
+
+    private void OnEraserToolClick(object sender, RoutedEventArgs e) => SelectTool(1);
+
+    private void SelectTool(int tool)
+    {
+        _currentTool = tool;
+        // Force mutual exclusivity — no way for both to be checked, and the
+        // active tool button always ends up checked even if the user clicked
+        // the already-checked one (WinUI ToggleButton toggles first, so
+        // re-setting IsChecked here overrides that).
+        PenToolButton.IsChecked = (tool == 0);
+        EraserToolButton.IsChecked = (tool == 1);
+        ApplyToolStateToEngine();
+    }
+
+    private void OnSizeSliderChanged(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        float size = (float)Math.Clamp(e.NewValue, MinBrushSize, MaxBrushSize);
+        _currentSize = size;
+        // SizeValueText can be null the very first time this fires during XAML
+        // layout (Slider's default-Value triggers ValueChanged before the sibling
+        // TextBlock has had its x:Name field wired up).
+        if (SizeValueText != null)
+        {
+            SizeValueText.Text = $"{(int)Math.Round(size)} px";
+        }
+        ApplyToolStateToEngine();
+    }
+
+    /// <summary>
+    /// Called by the `[` (–1) and `]` (+1) accelerators. Writes back through
+    /// the Slider so its thumb + numeric readout stay in sync; the resulting
+    /// <see cref="OnSizeSliderChanged"/> callback does the akapen_set_size push.
+    /// </summary>
+    private void NudgeSize(float delta)
+    {
+        float next = Math.Clamp(_currentSize + delta, MinBrushSize, MaxBrushSize);
+        // Skip a no-op write (at the min/max endpoints, or when the current
+        // value already matches after rounding) so we don't spam ValueChanged.
+        if (Math.Abs(next - _currentSize) < 0.0001f) return;
+        SizeSlider.Value = next;
+    }
+
+    /// <summary>
+    /// Shared Invoked handler for the Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z
+    /// KeyboardAccelerators declared on UndoButton/RedoButton in
+    /// MainWindow.xaml (see IsTextInputFocused's doc for why this guard
+    /// exists). Per the KeyboardAccelerator docs, a Button's Click normally
+    /// fires automatically via its Invoke control pattern whether or not
+    /// Invoked is subscribed; setting args.Handled = true here is what
+    /// suppresses that when a text-input control has focus. When it doesn't,
+    /// this leaves Handled at its default false, so the existing
+    /// auto-invoked-Click path is unchanged from before this fix.
+    /// </summary>
+    private void OnUndoRedoAcceleratorInvoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (IsTextInputFocused())
+        {
+            args.Handled = true;
+        }
+    }
+
+    private void OnUndoClick(object sender, RoutedEventArgs e)
+    {
+        if (_engine == IntPtr.Zero) return;
+        unsafe { NativeMethods.akapen_undo((AkapenEngine*)_engine); }
+    }
+
+    private void OnRedoClick(object sender, RoutedEventArgs e)
+    {
+        if (_engine == IntPtr.Zero) return;
+        unsafe { NativeMethods.akapen_redo((AkapenEngine*)_engine); }
+    }
+
+    /// <summary>
+    /// The M2-D deferred-apply push. Silent no-op when no engine is loaded, so
+    /// the UI can be adjusted freely before the first Open. Called on every
+    /// tool / color / size change and once per <see cref="LoadImage"/> so a
+    /// freshly-opened engine starts with the shell's current pose (not the
+    /// core's factory defaults).
+    /// </summary>
+    private void ApplyToolStateToEngine()
+    {
+        if (_engine == IntPtr.Zero) return;
+        unsafe
+        {
+            var eng = (AkapenEngine*)_engine;
+            NativeMethods.akapen_set_tool(eng, _currentTool);
+            NativeMethods.akapen_set_color(eng, _currentColorRgba);
+            NativeMethods.akapen_set_size(eng, _currentSize);
+        }
+    }
+
+    /// <summary>
+    /// Registers the single-key shortcuts that can't sit on their owning
+    /// button in XAML: P / E have no modifier (KeyboardAccelerator on a
+    /// specific button would only fire while that button had focus), and
+    /// `[` / `]` map to VirtualKey 0xDB / 0xDD (VK_OEM_4 / VK_OEM_6 in
+    /// Win32 land), which the Windows.System.VirtualKey enum has no named
+    /// members for — hence the raw enum cast. Scope defaults to the window,
+    /// so these dispatch regardless of which control has focus (the mac
+    /// shell handles the same shortcuts via SwiftUI .keyboardShortcut).
+    ///
+    /// Modifier-bearing shortcuts (Ctrl+S / Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
+    /// remain on their owning buttons in MainWindow.xaml — that's the
+    /// idiomatic WinUI placement and pairs naturally with the button's
+    /// tooltip.
+    ///
+    /// Only the spec §3 主要行 (Pen/Eraser 切替 + サイズ増減 + undo/redo)
+    /// are先取り実装; the full shortcut table routes through
+    /// akapen_resolve_key in M3.
+    /// </summary>
+    private void RegisterGlobalAccelerators()
+    {
+        AddRootAccelerator(VirtualKey.P, VirtualKeyModifiers.None, (_, args) =>
+        {
+            if (IsTextInputFocused()) return; // see IsTextInputFocused doc
+            SelectTool(0);
+            args.Handled = true;
+        });
+        AddRootAccelerator(VirtualKey.E, VirtualKeyModifiers.None, (_, args) =>
+        {
+            if (IsTextInputFocused()) return;
+            SelectTool(1);
+            args.Handled = true;
+        });
+        AddRootAccelerator((VirtualKey)0xDB, VirtualKeyModifiers.None, (_, args) =>
+        {
+            if (IsTextInputFocused()) return;
+            NudgeSize(-1.0f); // `[`
+            args.Handled = true;
+        });
+        AddRootAccelerator((VirtualKey)0xDD, VirtualKeyModifiers.None, (_, args) =>
+        {
+            if (IsTextInputFocused()) return;
+            NudgeSize(+1.0f); // `]`
+            args.Handled = true;
+        });
+    }
+
+    /// <summary>
+    /// Codex Ch.9 review (Medium): P / E / <c>[</c> / <c>]</c> above, and the
+    /// Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z accelerators on UndoButton/RedoButton in
+    /// MainWindow.xaml, are unscoped app accelerators (spec §3 主要行の先取
+    /// り) — WinUI resolves them at the window level regardless of which
+    /// control currently has keyboard focus (see "Resolving accelerators" in
+    /// Microsoft's keyboard-accelerators doc). M2-D ships no text-input
+    /// control anywhere in this window, so today this never actually fires
+    /// with a text box focused. But a Text tool or the Settings pane (both
+    /// M3) will add one, and once that happens these single-key/Ctrl+Z+Y+
+    /// Shift+Z shortcuts would otherwise steal keystrokes mid-edit — the same
+    /// hazard the core's own contract already guards against
+    /// (keymap.rs::resolve returns None while composing || text_editing; see
+    /// the generated composing/text_editing parameters on
+    /// NativeMethods.g.cs's akapen_resolve_key binding). This shell doesn't
+    /// route through akapen_resolve_key yet (M3, see class doc), so this is
+    /// the interim guard: every accelerator handler checks focus first and
+    /// backs off if a text-input control owns it, leaving the keystroke for
+    /// that control's own input pipeline instead of running our shortcut.
+    /// Ctrl+S (Save) deliberately keeps its unguarded pre-existing behavior —
+    /// see the comment on its KeyboardAccelerator in MainWindow.xaml.
+    /// </summary>
+    private bool IsTextInputFocused()
+    {
+        var xamlRoot = this.Content?.XamlRoot;
+        if (xamlRoot is null) return false;
+        var focused = FocusManager.GetFocusedElement(xamlRoot);
+        // AutoSuggestBox / editable ComboBox compose onto an inner TextBox,
+        // so focus already lands on the TextBox itself and is covered here
+        // without a separate case.
+        return focused is TextBox or RichEditBox or PasswordBox;
+    }
+
+    private void AddRootAccelerator(
+        VirtualKey key,
+        VirtualKeyModifiers mods,
+        Windows.Foundation.TypedEventHandler<KeyboardAccelerator, KeyboardAcceleratorInvokedEventArgs> handler)
+    {
+        var acc = new KeyboardAccelerator { Key = key, Modifiers = mods };
+        acc.Invoked += handler;
+        RootGrid.KeyboardAccelerators.Add(acc);
     }
 }

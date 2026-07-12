@@ -1,34 +1,57 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Akapen main window (spec §7.4-4 / §9 M2, first-cut WinUI 3 shell).
+  Akapen main window (spec §7.4-4 / §9 M2 / M2-D — WinUI 3 shell).
 
-  Layout mirrors the mac shell's ContentView (apps/mac/Sources/AkapenApp/
-  ContentView.swift) at the minimum-viable end of the range:
+  Layout expanded from M2-A (Open/Save + SwapChainPanel + StatusBar) to add the
+  M2-D tool/color/size + undo/redo UI that mirrors the mac shell's SidePanelView
+  (apps/mac/Sources/AkapenApp/SidePanelView.swift + ContentView.swift):
 
-    ┌───────────────────────────────────────────────────┐
-    │ [Open]  [Save]                                    │  ← ToolbarPanel (Grid.Row 0)
-    ├───────────────────────────────────────────────────┤
-    │                                                   │
-    │            SwapChainPanel (RenderSurface)         │  ← Grid.Row 1 (Star)
-    │                                                   │
-    ├───────────────────────────────────────────────────┤
-    │ status text …          pressure warning (orange)  │  ← StatusBar (Grid.Row 2)
-    └───────────────────────────────────────────────────┘
+    ┌───────────────────────────────────────────────────────────────┐
+    │ [Open] [Save] | [Pen] [Eraser] | [Undo] [Redo]               │  Toolbar (Grid.Row 0)
+    ├──────────────────────────────────────────────┬────────────────┤
+    │                                              │ サイズ  10 px │
+    │                                              │ [────●──]     │
+    │           SwapChainPanel                     │ ─────────      │  Grid.Row 1
+    │           (RenderSurface)                    │ 色             │
+    │                                              │ ● ● ● ● ●     │
+    │                                              │ ● ● ● ● ●     │
+    ├──────────────────────────────────────────────┴────────────────┤
+    │ status text …                    pressure warning (orange)   │  StatusBar (Grid.Row 2)
+    └───────────────────────────────────────────────────────────────┘
 
-  M2-B1 adds real pen/touch/mouse pointer-kind + pressure (spec §5.1) and
-  palm rejection (spec §5.2) via akapen_palm_route, plus the §5.4
-  pressure-stuck warning (right-aligned TextBlock, mirrors mac's
-  `Label(...).foregroundColor(.orange)` in ContentView.swift's statusBar).
-  M2-B1 intentionally does NOT ship: tool switcher UI, color picker, size
-  slider, undo/redo buttons, next/prev frame buttons, settings pane, or the
-  Wintab second pen path. Those are M2-B2/M2-D per the M2 plan in
-  apps/windows/README.md. Pen defaults are set once from code (red / 6.0 px,
-  matching the mac shell's opening pose).
+  Design notes on M2-D scope:
+    - Tool switcher: two `ToggleButton`s (Pen / Eraser) with a code-behind
+      mutex — cleaner than `RadioButtons` here because it can render as a
+      visibly-pressed toggle pair without an item template and matches how
+      most drawing apps show the active tool. Extra tools (Line / Arrow /
+      Rect / Ellipse / Text) exist in the FFI but are M3 UI scope.
+    - Color palette: 10 swatches (MS Paint 上段) are built in code from
+      PaletteColors.cs into the `ColorSwatchRoot` StackPanel (5 per row × 2
+      rows). Placing swatches in code keeps color literals out of XAML: a
+      palette swap only touches PaletteColors.cs. Arbitrary-color picking
+      (WinUI ColorPicker) is M3.
+    - Size slider: `Minimum=1, Maximum=50, Value=10` per spec §3 defaults.
+      Live px value shown next to the label. `[` / `]` shortcuts step by ±1
+      via a code-behind KeyboardAccelerator (spec §3 主要行の先取り、全表
+      対応は M3 / akapen_resolve_key 統合)。
+    - Undo / Redo: sit on the toolbar with `Ctrl+Z` and `Ctrl+Y` /
+      `Ctrl+Shift+Z` KeyboardAccelerators (the mac慣習の Ctrl+Shift+Z も併設)。
+    - SidePanel はまず固定サイズ(192 DIP)の右列で置く。mac は
+      `.overlay(alignment: .trailing)` の半透明フローティング(hover で
+      opacity 0.4→0.97 に戻る)だが、Windows の WinUI 3 でフローティング
+      + fade を組み立てる価値は M2-D の受け入れバーを超えるので、後続の
+      refine 候補として apps/windows/README.md に明記した(M3 相当)。
+    - `RootGrid` に `x:Name` を付けたのは code-behind から
+      `KeyboardAccelerators.Add(...)` するため:VirtualKey enum に `Oem4`/
+      `Oem6` (=`[`/`]`) の名前が無く、XAML の `Key="…"` 属性で書けないので
+      整数キャストで登録している(RegisterGlobalAccelerators を参照)。
 
-  The SwapChainPanel is the client-area draw target. Its Loaded event runs the
-  ISwapChainPanelNative QI, hands the raw COM pointer to
-  akapen_render_attach, and starts the DispatcherTimer that presents each
-  frame via akapen_render_frame. See MainWindow.xaml.cs.
+  非回帰:
+    - Ctrl+S / SaveButton, SwapChainPanel 一式, palm gate, pressure warning
+      は M2-A / M2-B1 のまま(コード側の handler と field 名も同じ)。
+    - 座標変換は `panel.ActualWidth/Height` を都度読むので、右列に固定幅の
+      SidePanel が入っても render surface の実サイズがそのまま反映され、
+      追加補正は不要。
 -->
 <Window
     x:Class="AkapenApp.MainWindow"
@@ -38,65 +61,152 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
     Title="Akapen">
-    <Grid>
+    <Grid x:Name="RootGrid">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- ── Toolbar: Open / Save. Ctrl+S is a KeyboardAccelerator on Save
-             (see the mac shell's `.keyboardShortcut("s", modifiers: .command)`
-             on its Save button, ContentView.swift). Full shortcut table is
-             M3 (spec §3, keyed off akapen_resolve_key so the two shells share
-             one map). ── -->
+        <!-- ── Toolbar: Open / Save | Pen / Eraser | Undo / Redo. Ctrl+S は M2-A
+             と同じく SaveButton に貼る。Undo / Redo の Ctrl+Z / Ctrl+Y (+ mac
+             慣習の Ctrl+Shift+Z) は各ボタンの KeyboardAccelerators に。 ── -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Padding="12,8" Spacing="8">
             <Button x:Name="OpenButton" Content="Open…" Click="OnOpenClick"/>
             <Button x:Name="SaveButton" Content="Save" Click="OnSaveClick" IsEnabled="False">
                 <Button.KeyboardAccelerators>
+                    <!-- Codex Ch.9 review (Medium): unlike Ctrl+Z/Y/Shift+Z below,
+                         Ctrl+S deliberately keeps its pre-existing unguarded
+                         behavior — Save is expected to work even while a future
+                         text-input control (Text tool / Settings, both M3) has
+                         focus, matching how Ctrl+S behaves inside a text field in
+                         most apps. See MainWindow.xaml.cs's IsTextInputFocused doc
+                         for the guard the other 主要行 accelerators do use. -->
                     <KeyboardAccelerator Modifiers="Control" Key="S"/>
+                </Button.KeyboardAccelerators>
+            </Button>
+
+            <AppBarSeparator/>
+
+            <!-- ツール切替: ToggleButton 対で選択中を視覚化。code-behind で相互
+                 排他を強制し、押されているボタンをもう一度クリックしても外れない
+                 (どちらか必ず選択)ようにする。 -->
+            <ToggleButton x:Name="PenToolButton"
+                          Content="Pen"
+                          IsChecked="True"
+                          Click="OnPenToolClick"
+                          ToolTipService.ToolTip="Pen (P)"
+                          AutomationProperties.Name="Pen tool"/>
+            <ToggleButton x:Name="EraserToolButton"
+                          Content="Eraser"
+                          Click="OnEraserToolClick"
+                          ToolTipService.ToolTip="Eraser (E)"
+                          AutomationProperties.Name="Eraser tool"/>
+
+            <AppBarSeparator/>
+
+            <Button x:Name="UndoButton"
+                    Content="Undo"
+                    Click="OnUndoClick"
+                    IsEnabled="False"
+                    ToolTipService.ToolTip="Undo (Ctrl+Z)"
+                    AutomationProperties.Name="Undo">
+                <Button.KeyboardAccelerators>
+                    <!-- Invoked="OnUndoRedoAcceleratorInvoked" (Codex Ch.9 review,
+                         Medium): guards against a future text-input control's own
+                         Ctrl+Z being stolen by this app-wide accelerator — see
+                         MainWindow.xaml.cs's IsTextInputFocused doc. -->
+                    <KeyboardAccelerator Modifiers="Control" Key="Z" Invoked="OnUndoRedoAcceleratorInvoked"/>
+                </Button.KeyboardAccelerators>
+            </Button>
+            <Button x:Name="RedoButton"
+                    Content="Redo"
+                    Click="OnRedoClick"
+                    IsEnabled="False"
+                    ToolTipService.ToolTip="Redo (Ctrl+Y / Ctrl+Shift+Z)"
+                    AutomationProperties.Name="Redo">
+                <Button.KeyboardAccelerators>
+                    <!-- Same guard as UndoButton's Ctrl+Z above. -->
+                    <KeyboardAccelerator Modifiers="Control" Key="Y" Invoked="OnUndoRedoAcceleratorInvoked"/>
+                    <KeyboardAccelerator Modifiers="Control,Shift" Key="Z" Invoked="OnUndoRedoAcceleratorInvoked"/>
                 </Button.KeyboardAccelerators>
             </Button>
         </StackPanel>
 
-        <!-- ── Render surface. Background is a neutral gray so the empty state
-             is obviously "no image yet" rather than "did the compositor fail".
-             PointerPressed/PointerMoved/PointerReleased/PointerCaptureLost/
-             PointerCanceled carry pen/touch/mouse alike (spec §5.1);
-             PointerCanceled is wired up alongside CaptureLost because WinRT
-             can raise it *instead of* Released (e.g. the contact leaves the
-             digitizer's sensing range) — without it that stroke's Up would
-             never reach the palm gate, leaving pen_down/lock stuck open.
-             ManipulationMode="None" is explicit (not just relying on the
-             default) so WinUI's gesture recognizer never intercepts a
-             multi-contact drag (e.g. a pen stroke alongside a resting palm)
-             before our own pointer handlers + the core palm gate (spec §5.2)
-             see it — mac's equivalent is CanvasNSView's `allowedTouchTypes =
-             [.direct]` in CanvasView.swift. ── -->
-        <SwapChainPanel
-            x:Name="RenderSurface"
-            Grid.Row="1"
-            Background="#262626"
-            ManipulationMode="None"
-            Loaded="OnRenderSurfaceLoaded"
-            Unloaded="OnRenderSurfaceUnloaded"
-            SizeChanged="OnRenderSurfaceSizeChanged"
-            PointerPressed="OnRenderSurfacePointerPressed"
-            PointerMoved="OnRenderSurfacePointerMoved"
-            PointerReleased="OnRenderSurfacePointerReleased"
-            PointerCaptureLost="OnRenderSurfacePointerCaptureLost"
-            PointerCanceled="OnRenderSurfacePointerCanceled"/>
+        <!-- ── Canvas + SidePanel の 2 カラム(Grid.Row 1)。SwapChainPanel は
+             左カラム(*)、SidePanel は右カラム(Auto、内側で Width=192 に固定)。
+             座標マッピングは SwapChainPanel.ActualWidth/Height を都度読むので、
+             右列に SidePanel が入っても render surface の実寸に追従する。 ── -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
 
-        <!-- ── Status bar. StatusText mirrors the mac shell's statusText —
-             "no image yet" prompt, loaded image size, save results, the "GPU
-             attach failed → CPU fallback" note (spec §7.4-6). PressureWarning
-             is the spec §5.4 constant-pressure warning, kept in its own
-             right-aligned TextBlock rather than folded into StatusText so a
-             save/open message can never silently clobber it (or vice versa) —
-             mirrors ContentView.swift's statusBar HStack{ Text(status);
-             Spacer(); Label(pressureWarning) }. Collapsed by default; only
-             shown while the last completed stroke had no pressure
-             variation. ── -->
+            <!-- Render surface. M2-A / M2-B1 の handler・属性は非回帰。 -->
+            <SwapChainPanel
+                x:Name="RenderSurface"
+                Grid.Column="0"
+                Background="#262626"
+                ManipulationMode="None"
+                Loaded="OnRenderSurfaceLoaded"
+                Unloaded="OnRenderSurfaceUnloaded"
+                SizeChanged="OnRenderSurfaceSizeChanged"
+                PointerPressed="OnRenderSurfacePointerPressed"
+                PointerMoved="OnRenderSurfacePointerMoved"
+                PointerReleased="OnRenderSurfacePointerReleased"
+                PointerCaptureLost="OnRenderSurfacePointerCaptureLost"
+                PointerCanceled="OnRenderSurfacePointerCanceled"/>
+
+            <!-- SidePanel: mac の SidePanelView 相当。 -->
+            <Border Grid.Column="1"
+                    Width="192"
+                    BorderBrush="#3a3a3a"
+                    BorderThickness="1,0,0,0">
+                <StackPanel Padding="12" Spacing="12">
+                    <!-- サイズ(1〜50 px)。スライダー右に現在値を数値表示。
+                         `[` / `]` ショートカットで NudgeSize(±1) が Slider.Value
+                         を書き替え、ValueChanged 経由で akapen_set_size を呼ぶ。 -->
+                    <StackPanel Orientation="Vertical" Spacing="4">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0"
+                                       Text="サイズ"
+                                       FontSize="12"/>
+                            <TextBlock x:Name="SizeValueText"
+                                       Grid.Column="1"
+                                       Text="10 px"
+                                       FontSize="12"
+                                       FontFamily="Consolas"/>
+                        </Grid>
+                        <Slider x:Name="SizeSlider"
+                                Minimum="1"
+                                Maximum="50"
+                                Value="10"
+                                StepFrequency="1"
+                                ValueChanged="OnSizeSliderChanged"
+                                AutomationProperties.Name="Brush size"/>
+                    </StackPanel>
+
+                    <Border Height="1" Background="#3a3a3a"/>
+
+                    <!-- 色: PaletteColors から動的に生成された10個の Button
+                         スウォッチが code-behind で 5x2 のレイアウトで積まれる。 -->
+                    <StackPanel Orientation="Vertical" Spacing="6">
+                        <TextBlock Text="色" FontSize="12"/>
+                        <StackPanel x:Name="ColorSwatchRoot"
+                                    Orientation="Vertical"
+                                    Spacing="6"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- ── Status bar. M2-A / M2-B1 のまま(StatusText と PressureWarningText
+             が同じ行に共存し、右詰め警告と save/open メッセージが互いを潰さない構図)。 ── -->
         <Border Grid.Row="2" BorderBrush="#3a3a3a" BorderThickness="0,1,0,0">
             <Grid>
                 <Grid.ColumnDefinitions>
