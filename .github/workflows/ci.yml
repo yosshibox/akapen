@@ -119,6 +119,42 @@ jobs:
         # layout mismatch only fails here, at real P/Invoke call time.
         run: dotnet bindings\dotnet\Akapen.SmokeTest\bin\Release\net8.0\Akapen.SmokeTest.dll
 
+  # Windows shell (spec §9 M2, first-cut). Only builds the WinUI 3 project —
+  # actually running the shell needs Session 1 to reach a DX12 swapchain (same
+  # limitation apps/windows-probe hits under Session 0 SSH), and `dotnet build`
+  # cannot present a XAML window on a headless runner. The build alone still
+  # catches every regression the shell is meant to catch here: XAML markup /
+  # code-behind mismatches, .csproj drift against the WindowsAppSDK NuGet
+  # package, and any accidental break of the internal Akapen.Native class
+  # library the shell references (a change that broke the friend-access
+  # InternalsVisibleTo would fail this job on the same push).
+  apps-windows-shell:
+    name: apps / windows shell (WinUI 3)
+    runs-on: windows-latest
+    needs: header-parity
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Build the Rust C ABI (produces akapen.dll)
+        run: cargo build -p akapen-ffi --release
+      - name: Generate C# P/Invoke bindings via csbindgen
+        # The shell consumes the same csbindgen-generated NativeMethods the
+        # bindings-dotnet job compiles — regenerate first so a Rust FFI drift
+        # fails here as a compile error, not a runtime crash.
+        run: cargo run -p akapen-dotnet-bindgen
+      - name: Build the WinUI 3 shell (build only, no run)
+        # Session 0 GitHub Actions runners cannot present a DX12 swapchain, so
+        # the shell can only be *built* here. Real GUI verification (Open, draw,
+        # save) is a manual .34 Session 1 step — see apps/windows/README.md.
+        run: dotnet build apps/windows/AkapenApp/AkapenApp.csproj -c Release
+
   bindings-node:
     name: bindings / node (napi-rs)
     runs-on: ubuntu-latest

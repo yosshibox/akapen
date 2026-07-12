@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Akapen main window (spec §7.4-4 / §9 M2, first-cut WinUI 3 shell).
+
+  Layout mirrors the mac shell's ContentView (apps/mac/Sources/AkapenApp/
+  ContentView.swift) at the minimum-viable end of the range:
+
+    ┌───────────────────────────────────────────────────┐
+    │ [Open]  [Save]                                    │  ← ToolbarPanel (Grid.Row 0)
+    ├───────────────────────────────────────────────────┤
+    │                                                   │
+    │            SwapChainPanel (RenderSurface)         │  ← Grid.Row 1 (Star)
+    │                                                   │
+    ├───────────────────────────────────────────────────┤
+    │ status text …                                     │  ← StatusBar (Grid.Row 2)
+    └───────────────────────────────────────────────────┘
+
+  M2-A intentionally does NOT ship: tool switcher UI, color picker, size
+  slider, undo/redo buttons, next/prev frame buttons, settings pane, palm-
+  rejection toggle, or pen input. Those are M2-B/M2-C/M2-D per the M2 plan in
+  apps/windows/README.md. Pen defaults are set once from code (red / 6.0 px,
+  matching the mac shell's opening pose).
+
+  The SwapChainPanel is the client-area draw target. Its Loaded event runs the
+  ISwapChainPanelNative QI, hands the raw COM pointer to
+  akapen_render_attach, and starts the DispatcherTimer that presents each
+  frame via akapen_render_frame. See MainWindow.xaml.cs.
+-->
+<Window
+    x:Class="AkapenApp.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="Akapen">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ── Toolbar: Open / Save. Ctrl+S is a KeyboardAccelerator on Save
+             (see the mac shell's `.keyboardShortcut("s", modifiers: .command)`
+             on its Save button, ContentView.swift). Full shortcut table is
+             M3 (spec §3, keyed off akapen_resolve_key so the two shells share
+             one map). ── -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Padding="12,8" Spacing="8">
+            <Button x:Name="OpenButton" Content="Open…" Click="OnOpenClick"/>
+            <Button x:Name="SaveButton" Content="Save" Click="OnSaveClick" IsEnabled="False">
+                <Button.KeyboardAccelerators>
+                    <KeyboardAccelerator Modifiers="Control" Key="S"/>
+                </Button.KeyboardAccelerators>
+            </Button>
+        </StackPanel>
+
+        <!-- ── Render surface. Background is a neutral gray so the empty state
+             is obviously "no image yet" rather than "did the compositor fail".
+             PointerPressed/PointerMoved/PointerReleased are captured on the
+             panel itself; mouse-only for M2-A (WM_POINTER pen wiring is
+             M2-B). ── -->
+        <SwapChainPanel
+            x:Name="RenderSurface"
+            Grid.Row="1"
+            Background="#262626"
+            Loaded="OnRenderSurfaceLoaded"
+            Unloaded="OnRenderSurfaceUnloaded"
+            SizeChanged="OnRenderSurfaceSizeChanged"
+            PointerPressed="OnRenderSurfacePointerPressed"
+            PointerMoved="OnRenderSurfacePointerMoved"
+            PointerReleased="OnRenderSurfacePointerReleased"
+            PointerCaptureLost="OnRenderSurfacePointerCaptureLost"/>
+
+        <!-- ── Status bar. Mirrors the mac shell's statusText — surfaces the
+             "no image yet" prompt, the loaded image's size, save results, and
+             the "GPU attach failed → CPU fallback" note if
+             akapen_render_attach returns non-zero (spec §7.4-6). ── -->
+        <Border Grid.Row="2" BorderBrush="#3a3a3a" BorderThickness="0,1,0,0">
+            <TextBlock
+                x:Name="StatusText"
+                Padding="12,6"
+                FontSize="12"
+                Text="Open an image (Ctrl+O or the Open… button) to begin."/>
+        </Border>
+    </Grid>
+</Window>

@@ -10,8 +10,12 @@
 // keeps the C ABI reviewable but not the product API). The smoke-test console
 // app (../Akapen.SmokeTest) needs to call them directly to prove the P/Invoke
 // boundary actually loads and runs akapen.dll, so it is declared a friend
-// assembly here rather than making the surface public.
+// assembly here rather than making the surface public. The Windows shell
+// (apps/windows/AkapenApp, spec §9 M2 first-cut) is granted the same friend
+// access for the same reason — it drives the C ABI directly rather than
+// waiting on the M5 public managed API surface.
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Akapen.SmokeTest")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("AkapenApp")]
 
 namespace Akapen.Native;
 

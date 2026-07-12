@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Application manifest for the unpackaged WinUI 3 shell (spec §7.4-4 / §9 M2).
+  Kept intentionally minimal: per-monitor-v2 DPI awareness and the "Windows 10
+  and above" compatibility tags. WinUI 3 refuses to spin up a XAML dispatcher
+  under system DPI awareness on high-DPI displays, so the DPI declaration is
+  not decorative — it is required for the SwapChainPanel present path to line
+  up 1:1 with the client-area pixels the shell reports to akapen_render_resize.
+-->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="AkapenApp"/>
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>
+    </windowsSettings>
+  </application>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <!-- Windows 11 is Windows 10 to the manifest; no separate GUID needed. -->
+    </application>
+  </compatibility>
+</assembly>

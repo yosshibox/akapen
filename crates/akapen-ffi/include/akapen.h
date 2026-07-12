@@ -212,7 +212,13 @@ void akapen_enable_diagnostic_logging(void);
 enum {
     AKAPEN_SURFACE_METAL_LAYER = 0,     /* mac/iOS: handle is the NSView (not the layer) */
     AKAPEN_SURFACE_HWND = 1,            /* Windows Win32 window handle */
-    AKAPEN_SURFACE_SWAPCHAIN_PANEL = 2  /* WinUI 3 SwapChainPanel (not yet wired; attach returns 4) */
+    AKAPEN_SURFACE_SWAPCHAIN_PANEL = 2  /* WinUI 3 SwapChainPanel: wired (spec §9 M2-A). Consumers
+                                         * pass an AddRef'd ISwapChainPanelNative pointer, obtained
+                                         * via QueryInterface on the live SwapChainPanel, as `handle`;
+                                         * the surface bridges to wgpu's dx12 backend via
+                                         * SurfaceTargetUnsafe::SwapChainPanel. See
+                                         * crates/akapen-render/src/surface.rs and
+                                         * apps/windows/AkapenApp/Interop/SwapChainPanelNativeInterop.cs. */
 };
 
 /*
@@ -248,7 +254,8 @@ typedef struct AkapenViewTransform {
  * background and committed strokes. Returns 0 on success; non-zero means the
  * caller should fall back to the CPU path:
  *   1 = null engine, 2 = null desc, 3 = unknown kind,
- *   4 = surface/adapter/device bring-up failed (e.g. no GPU, or SwapChainPanel).
+ *   4 = surface/adapter/device bring-up failed (e.g. no compatible GPU/adapter,
+ *       or a rejected ISwapChainPanelNative handle).
  * `desc->handle` must stay valid (and used only from this thread) for as long
  * as the surface remains attached.
  */

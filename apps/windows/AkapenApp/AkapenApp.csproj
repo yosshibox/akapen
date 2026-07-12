@@ -1,0 +1,152 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      Akapen Windows shell (spec §7.4-4 / §8.2 / §9 M2). First-cut WinUI 3 +
+      Windows App SDK (.NET 8) implementation, per the spec's "Windows =
+      WinUI 3 / Windows App SDK を第一候補" decision. If M2 hits WinUI-specific
+      showstoppers whose workaround cost exceeds the shell itself, §7.4-4 says
+      retreat to WPF (.NET 8) + HwndHost — for now we drive the first-candidate
+      path.
+
+      Target framework: WinUI 3 requires net8.0-windows10.0.19041.0 (that is
+      the minimum Windows 10 SDK the Windows App SDK supports). Even though the
+      class library sibling (bindings/dotnet/Akapen.Native) is a plain net8.0,
+      the *shell* has to be Windows-versioned so it can reference
+      Microsoft.UI.Xaml.* types.
+    -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <RootNamespace>AkapenApp</RootNamespace>
+    <AssemblyName>AkapenApp</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+
+    <!--
+      Unpackaged (no MSIX) so a plain `dotnet run` / `dotnet build` produces a
+      runnable exe without needing MSIX identity, sideload cert setup, or the
+      MSIX packaging tooling. The chapter goal is "does the shell come up and
+      call through the FFI", not distribution — MSIX packaging is a later
+      chapter (see README).
+    -->
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <UseWindowsForms>false</UseWindowsForms>
+
+    <!--
+      Windows App SDK is x64/arm64/x86 only (no AnyCPU). CI runs windows-latest
+      which is x64; Surface Go 3 (the M2 real-device gate) is x64. Not shipping
+      x86 for this chapter — nothing depends on it.
+
+      Platform defaults to x64 when the caller doesn't specify one so a plain
+      `dotnet build apps/windows/AkapenApp/AkapenApp.csproj` on Windows just
+      works — WindowsAppSDK's SelfContained target refuses AnyCPU (see
+      Microsoft.WindowsAppSDK.SelfContained.targets), and dotnet's default of
+      AnyCPU otherwise trips that check before the shell code is even
+      compiled. Explicit `-p:Platform=ARM64` (or the arm64 msbuild config)
+      still works for the Surface Go 3 arm64 target when we cross-build.
+    -->
+    <Platforms>x64;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <Platform Condition=" '$(Platform)' == '' or '$(Platform)' == 'AnyCPU' ">x64</Platform>
+    <PlatformTarget Condition=" '$(Platform)' == 'x64' ">x64</PlatformTarget>
+    <PlatformTarget Condition=" '$(Platform)' == 'ARM64' ">ARM64</PlatformTarget>
+    <RuntimeIdentifier Condition=" '$(RuntimeIdentifier)' == '' and '$(Platform)' == 'x64' ">win-x64</RuntimeIdentifier>
+    <RuntimeIdentifier Condition=" '$(RuntimeIdentifier)' == '' and '$(Platform)' == 'ARM64' ">win-arm64</RuntimeIdentifier>
+
+    <!--
+      We hold a raw ISwapChainPanelNative* pointer (`IntPtr`) and hand it
+      through the C ABI to wgpu; also read out COM vtable slots via
+      Marshal.QueryInterface. That is an unsafe / raw-pointer surface.
+    -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!--
+      Deployed as self-contained so `dotnet build` output can run on a Surface
+      Go without a pre-installed Windows App Runtime. Not required for CI, but
+      it also removes the "which WinAppRuntime is on the box" variable from
+      the first run.
+    -->
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+
+    <!--
+      Prerequisite note (readers coming from the README): WinUI 3's
+      MrtCore.PriGen.targets is pulled in unconditionally by the
+      WindowsAppSDK metapackage and expects
+      Microsoft.Build.Packaging.Pri.Tasks.dll under `$(AppxMSBuildToolsPath)`,
+      which ships with Visual Studio's "MSIX packaging tools" workload rather
+      than with the WindowsAppSDK NuGet itself. On a stock Windows box that
+      only has the .NET SDK (no VS / no VS Build Tools) the DLL is missing
+      and the task load fails with MSB4062 even for unpackaged builds. GH
+      Actions windows-latest preinstalls VS 2022 with the workloads that
+      supply that DLL, so CI is unaffected; local dev boxes need to install
+      the "MSIX packaging tools" workload — apps/windows/README.md flags
+      this so it doesn't confuse the next contributor to `dotnet build` from
+      a bare install.
+    -->
+
+    <!-- Not for public consumption yet; ships nothing to NuGet. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Microsoft.WindowsAppSDK is the WinUI 3 runtime + tooling. This shell
+      was scaffolded against 1.5.240607001 (GA Feb 2024), but the 1.5 line
+      went out of servicing 2025-02-28 (with a handful of important fixes
+      landing in 1.5.5-1.5.9 after the original pin) — not an acceptable
+      base for a shell first shipping in 2026. Pinned instead to
+      1.8.260529003, which is WinAppSDK **1.8.9 — the latest supported
+      servicing release of the 1.8 line** (see
+      https://github.com/microsoft/WindowsAppSDK/wiki/WinAppSDK-Released-Artifacts).
+      Microsoft's current mainstream Stable line is 2.x (2.2.0 at the time
+      of this bump); we deliberately stay on 1.8 for M2-A scaffolding to
+      keep the API surface familiar and the XAML/COM interop patterns
+      well-documented in existing samples. Upgrading to 2.x is deferred to
+      a later M2 chapter once the shell is more complete and worth the
+      migration cost (2.x introduces breaking changes and requires
+      re-verifying the SwapChainPanel/DXGI path). Nothing in the shell
+      reaches for a version-gated API. The 1.8 line's NuGet-metapackage
+      split — component packages exist from 1.8.0 onward, not "1.8.7+" as
+      an earlier comment claimed — is transparent here since we reference
+      the top-level Microsoft.WindowsAppSDK metapackage, not an individual
+      component package.
+
+      Microsoft.Windows.SDK.BuildTools is the matching Windows SDK build
+      tools NuGet package — WinUI 3 XAML markup compilation (MSBuild task
+      GenerateAppxManifest, XAML compiler, resw compiler) depends on it even
+      in unpackaged mode. Bumped alongside WindowsAppSDK to 10.0.28000.2270
+      (a current stable release on NuGet); the two are not required to move
+      in lockstep, but staying on the old 10.0.22621.3233 alongside a much
+      newer WindowsAppSDK risked mismatched XAML-compiler/tooling behavior.
+    -->
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260529003" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Reuse the csbindgen-generated internal `NativeMethods` /
+      `AkapenSurfaceDesc` / `AkapenViewTransform` from the class library — the
+      same class library the Akapen.SmokeTest CI job builds against. That is
+      the "one C ABI, one binding face" invariant: the shell does *not* hand-
+      roll a second copy of the P/Invoke surface (`apps/windows-probe` did, on
+      purpose, because it was a throwaway spike — see its README).
+
+      `NativeMethods` is `internal`, so this project is granted friend access
+      via `[InternalsVisibleTo("AkapenApp")]` in
+      ../../bindings/dotnet/Akapen.Native/AssemblyInfo.cs (same shape as
+      Akapen.SmokeTest — see there for why the internal-only surface at M1/M2
+      is a deliberate choice).
+    -->
+    <ProjectReference Include="..\..\..\bindings\dotnet\Akapen.Native\Akapen.Native.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+  </ItemGroup>
+
+</Project>
