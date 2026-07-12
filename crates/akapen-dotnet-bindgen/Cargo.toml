@@ -1,0 +1,19 @@
+[package]
+name = "akapen-dotnet-bindgen"
+description = "Runs csbindgen over crates/akapen-ffi/src/lib.rs to emit C# P/Invoke bindings under bindings/dotnet/. CI-only; the mac face does not depend on this."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "akapen-dotnet-bindgen"
+path = "src/main.rs"
+
+[dependencies]
+# csbindgen parses `#[repr(C)] struct` + `pub unsafe extern "C" fn` items in a
+# Rust source file and emits a C# NativeMethods class (spec §7.4 permits either
+# hand-written or generated bindings; the .NET face uses generation to keep the
+# P/Invoke surface in lock-step with `akapen-ffi/src/lib.rs`).
+csbindgen = "1.9"

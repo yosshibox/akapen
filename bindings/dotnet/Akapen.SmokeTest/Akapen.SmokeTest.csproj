@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      Same target as Akapen.Native (spec §9 M2 WinUI 3 shell target). A console
+      app is enough here — this project never opens a window, it only proves
+      the P/Invoke boundary end to end (see Program.cs header).
+    -->
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Akapen.SmokeTest</RootNamespace>
+    <AssemblyName>Akapen.SmokeTest</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <!-- Program.cs takes the address of local variables to pass to the
+         DllImport surface (e.g. `&w`, `&palmState`); that requires an unsafe
+         context, same as the generated NativeMethods file it calls into. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Pulls in the csbindgen-generated NativeMethods (internal-only; see
+         AssemblyInfo.cs's InternalsVisibleTo for why this project can see it). -->
+    <ProjectReference Include="..\Akapen.Native\Akapen.Native.csproj" />
+  </ItemGroup>
+
+</Project>

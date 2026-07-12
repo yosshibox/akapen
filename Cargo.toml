@@ -5,6 +5,12 @@ members = [
     "crates/akapen-io",
     "crates/akapen-ffi",
     "crates/akapen-render",
+    # Tri-face build discipline (spec §9): the .NET-side csbindgen generator
+    # runs in CI on Windows before `dotnet build`; the napi-rs crate is the
+    # Node-side probe. Both are M1 CI-only — the product API (spec §9 M5) is
+    # not exposed here.
+    "crates/akapen-dotnet-bindgen",
+    "bindings/node",
 ]
 
 [workspace.package]

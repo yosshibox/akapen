@@ -1,0 +1,26 @@
+{
+  "name": "@akapen/core-node-ci",
+  "version": "0.0.1",
+  "description": "CI-only napi-rs probe over crates/akapen-ffi. Not the M5 public package (spec §9).",
+  "private": true,
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "name": "akapen-core-node",
+    "triples": {
+      "defaults": true,
+      "additional": []
+    }
+  },
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      .NET 8 is the WinUI 3 shell target framework (spec §7.4-4 / §9 M2). Even
+      though no shell ships yet, keeping the class library on net8.0 makes the
+      CI face representative of what M2 will consume.
+    -->
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Akapen.Native</RootNamespace>
+    <AssemblyName>Akapen.Native</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <!-- Not for public consumption (spec §9 M5 is when the .NET API stabilizes). -->
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!--
+      csbindgen output relies on unsafe pointer types (e.g. `IntPtr`, `byte*`).
+      The class library is internal-only; keeping unsafe blocks scoped to the
+      generated file is intentional.
+    -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!--
+      Suppress a small set of style-only warnings from the generated file so
+      hand-written code can still enable warnings-as-errors later without
+      touching csbindgen output:
+        CS8981 = type name contains only lower-case chars (csbindgen struct
+        names copy the Rust `AkapenPalmState` etc verbatim — fine).
+    -->
+    <NoWarn>$(NoWarn);CS8981</NoWarn>
+  </PropertyGroup>
+
+  <!--
+    Files under this directory (AssemblyInfo.cs plus, when present,
+    Generated/NativeMethods.g.cs emitted by `cargo run -p akapen-dotnet-bindgen`)
+    are picked up by the SDK's default Compile glob — no explicit item group is
+    needed. The generated file is gitignored; CI regenerates before build.
+  -->
+
+</Project>

@@ -1,0 +1,33 @@
+[package]
+name = "akapen-node"
+description = "Node native addon (napi-rs) wrapping the Akapen C ABI. CI-only at M1 — proves the Node face of the tri-face build discipline (spec §9)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+# napi-rs produces a `.node` file (a cdylib the Node loader dlopens).
+crate-type = ["cdylib"]
+
+[dependencies]
+# napi-rs uses N-API 4 as the widely-supported baseline (Node ≥ 12). Disable
+# default features to keep the surface small (no async runtime, no serde) — we
+# only need the sync boundary for the M1 CI probe.
+napi = { version = "2", default-features = false, features = ["napi4"] }
+napi-derive = "2"
+# Link the C ABI as an rlib. Every `#[no_mangle] extern "C" fn` in akapen-ffi
+# is exposed on this cdylib (so the .node file is *also* a drop-in libakapen),
+# but consumers should call the napi-decorated wrappers below — those are the
+# ones marked #[napi] and visible from JavaScript.
+akapen-ffi = { path = "../../crates/akapen-ffi" }
+
+[build-dependencies]
+# napi-build injects the linker flags Node needs on each platform (e.g. the
+# `-undefined dynamic_lookup` dance on mac).
+napi-build = "2"
+
+# Note: release-time LTO would live in the workspace `Cargo.toml` if we ever
+# want it here — Cargo warns when a non-root package sets profile settings.
+# napi-rs release builds already emit small-enough .node files for the CI probe.

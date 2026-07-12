@@ -9,8 +9,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Core (+ io) build and test on all three target OSes. This is the only job
-  # that compiles real code at M0.
+  # Core (+ io) build and test on all three target OSes. The workspace-wide
+  # `cargo build/test/clippy` here also compiles the .NET-side bindgen (a bin
+  # crate) and the Node-side napi-rs crate, so a plain Rust break in either
+  # binding fails this job on every platform.
   core:
     name: core (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -35,13 +37,17 @@ jobs:
       - name: Test (includes reference-vector ports)
         run: cargo test --workspace --verbose
 
-  # Tri-face build discipline (spec §9): the three binding faces must always be
-  # exercised so UI dependencies cannot leak into the core. At M0 these are
-  # placeholders that assert the scaffold exists; they become real generate +
-  # build steps as bindings land (Swift M1, .NET M2, Node M5).
-  # mac shell: build the Rust C ABI static lib, then compile the SwiftUI shell
-  # (AkapenApp) and the headless FFI proof harness against it. This exercises
-  # the Swift↔Rust boundary on every push (spec §9 "tri-face build discipline").
+  # Tri-face build discipline (spec §9 "M1 併走条件"). Each face compiles a
+  # different consumer against the same C ABI in `crates/akapen-ffi`, so an
+  # ABI-breaking change in the core fails at least one of the three faces on
+  # the same push. The three faces are:
+  #   mac-shell       — Rust static lib + SwiftUI shell + headless harness.
+  #   bindings-dotnet — Rust cdylib + csbindgen-generated C# + .NET class lib.
+  #   bindings-node   — napi-rs cdylib producing a loadable .node addon.
+  #
+  # None of the three ship product-level bindings yet (spec §9 M5 is when the
+  # public API stabilizes); the goal here is link+build coverage only.
+
   mac-shell:
     name: mac shell (swift + ffi)
     runs-on: macos-latest
@@ -66,18 +72,67 @@ jobs:
           test -f "$RUNNER_TEMP/akapen-review/harness.strokes.json"
 
   bindings-dotnet:
-    name: bindings / dotnet (placeholder)
+    name: bindings / dotnet (csbindgen + .NET 8)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Placeholder — dotnet binding face present
-        shell: bash
-        run: test -f bindings/README.md && echo "dotnet binding scaffold present"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Build the Rust C ABI (produces akapen.dll)
+        run: cargo build -p akapen-ffi --release
+      - name: Generate C# P/Invoke bindings via csbindgen
+        run: cargo run -p akapen-dotnet-bindgen
+      - name: Build the .NET class library (Akapen.Native)
+        run: dotnet build bindings/dotnet/Akapen.Native/Akapen.Native.csproj -c Release
+      - name: Build the P/Invoke smoke test (Akapen.SmokeTest)
+        run: dotnet build bindings/dotnet/Akapen.SmokeTest/Akapen.SmokeTest.csproj -c Release
+      - name: Place akapen.dll next to the smoke test binary
+        # `dotnet build` never copies a native DLL it does not itself produce;
+        # the P/Invoke [DllImport("akapen")] resolves it via the default probe
+        # path, which includes the executable's own output directory.
+        run: Copy-Item target\release\akapen.dll bindings\dotnet\Akapen.SmokeTest\bin\Release\net8.0\akapen.dll
+      - name: Run the smoke test (loads akapen.dll and calls through it)
+        # This is the actual regression the class-library build above cannot
+        # catch: a wrong DLL name, a missing native dependency, or a struct
+        # layout mismatch only fails here, at real P/Invoke call time.
+        run: dotnet bindings\dotnet\Akapen.SmokeTest\bin\Release\net8.0\Akapen.SmokeTest.dll
 
   bindings-node:
-    name: bindings / node (placeholder)
+    name: bindings / node (napi-rs)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Placeholder — node binding face present
-        run: test -f bindings/README.md && echo "node binding scaffold present"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Install napi-rs CLI
+        run: npm install --no-fund --no-audit
+        working-directory: bindings/node
+      - name: Build the napi-rs addon (.node)
+        run: npm run build
+        working-directory: bindings/node
+      - name: Assert the .node binary exists
+        run: |
+          set -e
+          shopt -s nullglob
+          files=(bindings/node/*.node)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "napi build did not emit a .node binary" >&2
+            ls -la bindings/node
+            exit 1
+          fi
+          echo "produced: ${files[*]}"
+      - name: Load and call the addon (validates C ABI symbol resolution)
+        working-directory: bindings/node
+        run: node -e "const m = require('./'); const v = m.version(); if (!v) throw new Error('version() returned falsy'); const size = m.pingNewEngine(1024, 768); if (size[0] !== 1024 || size[1] !== 768) throw new Error('pingNewEngine returned ' + JSON.stringify(size)); const r = m.palmRoute(0, 0, 1000); if (r !== 'draw') throw new Error('palmRoute returned ' + r); const b = m.openBogusReturnsNull('/definitely/does/not/exist.png'); if (b !== true) throw new Error('openBogusReturnsNull returned ' + b); console.log('[smoke] version=' + v + ' size=' + JSON.stringify(size) + ' palm=' + r + ' bogus=' + b);"

@@ -14,12 +14,20 @@ DerivedData/
 bin/
 obj/
 *.user
+# csbindgen output (spec §9 tri-face CI probe). Regenerated on every build; see
+# bindings/dotnet/README.md.
+bindings/dotnet/Akapen.Native/Generated/*.g.cs
 
 # Node
 node_modules/
 npm-debug.log*
 yarn-error.log*
 *.tsbuildinfo
+# napi-rs build artefacts (spec §9 tri-face CI probe). Regenerated on every
+# build; see bindings/node/README.md.
+bindings/node/*.node
+bindings/node/index.js
+bindings/node/index.d.ts
 
 # WASM build output
 pkg/
