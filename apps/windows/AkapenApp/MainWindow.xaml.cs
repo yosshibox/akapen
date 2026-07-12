@@ -79,7 +79,8 @@ using Microsoft.UI.Xaml.Media;
 using Windows.Storage;
 using Windows.Storage.Pickers;
 using Windows.System; // VirtualKey / VirtualKeyModifiers
-using Windows.UI; // Color / Colors
+using Windows.UI; // Color struct (WinUI 3 still uses Windows.UI.Color)
+using Microsoft.UI; // Colors static class (WinUI 3's; Windows.UI.Colors is UWP-only)
 
 namespace AkapenApp;
 
