@@ -12,12 +12,16 @@
     │            SwapChainPanel (RenderSurface)         │  ← Grid.Row 1 (Star)
     │                                                   │
     ├───────────────────────────────────────────────────┤
-    │ status text …                                     │  ← StatusBar (Grid.Row 2)
+    │ status text …          pressure warning (orange)  │  ← StatusBar (Grid.Row 2)
     └───────────────────────────────────────────────────┘
 
-  M2-A intentionally does NOT ship: tool switcher UI, color picker, size
-  slider, undo/redo buttons, next/prev frame buttons, settings pane, palm-
-  rejection toggle, or pen input. Those are M2-B/M2-C/M2-D per the M2 plan in
+  M2-B1 adds real pen/touch/mouse pointer-kind + pressure (spec §5.1) and
+  palm rejection (spec §5.2) via akapen_palm_route, plus the §5.4
+  pressure-stuck warning (right-aligned TextBlock, mirrors mac's
+  `Label(...).foregroundColor(.orange)` in ContentView.swift's statusBar).
+  M2-B1 intentionally does NOT ship: tool switcher UI, color picker, size
+  slider, undo/redo buttons, next/prev frame buttons, settings pane, or the
+  Wintab second pen path. Those are M2-B2/M2-D per the M2 plan in
   apps/windows/README.md. Pen defaults are set once from code (red / 6.0 px,
   matching the mac shell's opening pose).
 
@@ -57,31 +61,63 @@
 
         <!-- ── Render surface. Background is a neutral gray so the empty state
              is obviously "no image yet" rather than "did the compositor fail".
-             PointerPressed/PointerMoved/PointerReleased are captured on the
-             panel itself; mouse-only for M2-A (WM_POINTER pen wiring is
-             M2-B). ── -->
+             PointerPressed/PointerMoved/PointerReleased/PointerCaptureLost/
+             PointerCanceled carry pen/touch/mouse alike (spec §5.1);
+             PointerCanceled is wired up alongside CaptureLost because WinRT
+             can raise it *instead of* Released (e.g. the contact leaves the
+             digitizer's sensing range) — without it that stroke's Up would
+             never reach the palm gate, leaving pen_down/lock stuck open.
+             ManipulationMode="None" is explicit (not just relying on the
+             default) so WinUI's gesture recognizer never intercepts a
+             multi-contact drag (e.g. a pen stroke alongside a resting palm)
+             before our own pointer handlers + the core palm gate (spec §5.2)
+             see it — mac's equivalent is CanvasNSView's `allowedTouchTypes =
+             [.direct]` in CanvasView.swift. ── -->
         <SwapChainPanel
             x:Name="RenderSurface"
             Grid.Row="1"
             Background="#262626"
+            ManipulationMode="None"
             Loaded="OnRenderSurfaceLoaded"
             Unloaded="OnRenderSurfaceUnloaded"
             SizeChanged="OnRenderSurfaceSizeChanged"
             PointerPressed="OnRenderSurfacePointerPressed"
             PointerMoved="OnRenderSurfacePointerMoved"
             PointerReleased="OnRenderSurfacePointerReleased"
-            PointerCaptureLost="OnRenderSurfacePointerCaptureLost"/>
+            PointerCaptureLost="OnRenderSurfacePointerCaptureLost"
+            PointerCanceled="OnRenderSurfacePointerCanceled"/>
 
-        <!-- ── Status bar. Mirrors the mac shell's statusText — surfaces the
-             "no image yet" prompt, the loaded image's size, save results, and
-             the "GPU attach failed → CPU fallback" note if
-             akapen_render_attach returns non-zero (spec §7.4-6). ── -->
+        <!-- ── Status bar. StatusText mirrors the mac shell's statusText —
+             "no image yet" prompt, loaded image size, save results, the "GPU
+             attach failed → CPU fallback" note (spec §7.4-6). PressureWarning
+             is the spec §5.4 constant-pressure warning, kept in its own
+             right-aligned TextBlock rather than folded into StatusText so a
+             save/open message can never silently clobber it (or vice versa) —
+             mirrors ContentView.swift's statusBar HStack{ Text(status);
+             Spacer(); Label(pressureWarning) }. Collapsed by default; only
+             shown while the last completed stroke had no pressure
+             variation. ── -->
         <Border Grid.Row="2" BorderBrush="#3a3a3a" BorderThickness="0,1,0,0">
-            <TextBlock
-                x:Name="StatusText"
-                Padding="12,6"
-                FontSize="12"
-                Text="Open an image (Ctrl+O or the Open… button) to begin."/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock
+                    x:Name="StatusText"
+                    Grid.Column="0"
+                    Padding="12,6"
+                    FontSize="12"
+                    Text="Open an image (Ctrl+O or the Open… button) to begin."/>
+                <TextBlock
+                    x:Name="PressureWarningText"
+                    Grid.Column="1"
+                    Padding="12,6"
+                    FontSize="12"
+                    Foreground="Orange"
+                    Visibility="Collapsed"
+                    Text="Pressure not detected — check the tablet driver / pen pressure settings."/>
+            </Grid>
         </Border>
     </Grid>
 </Window>

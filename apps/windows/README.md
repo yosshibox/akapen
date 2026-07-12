@@ -46,25 +46,63 @@ This project (`apps/windows`), by contrast, is the real M2 shell:
   `_detach` via the raw `ISwapChainPanelNative*`. DispatcherTimer drives one
   present per tick.
 - Mouse-only input: `PointerPressed/Moved/Released` → `akapen_pointer(kind=Mouse,
-  pressure=1.0)`. `MainWindow.xaml.cs::PushMouseSample` inverts the render
-  surface's centered, scale-1 placement back to image pixels (panel DIP size
-  <-> image pixel size), so this holds across ordinary window resizes; a
-  press outside the displayed image is skipped rather than starting a stroke.
-  Zoom / pan / rotate remap is still a later chapter (M2-D).
+  pressure=1.0)`. Superseded by M2-B1 below (kept for history — the
+  coordinate-mapping logic it introduced is unchanged, just generalized).
 - Default pen settings on Open: red (`0xFF0000FF`) / 6.0 px, Pen tool. Matches
   the mac shell's opening pose (`PaletteColors.defaultColor`).
 - Unpackaged FileOpenPicker requires `WinRT.Interop.InitializeWithWindow`
   with the window's HWND, otherwise `PickSingleFileAsync` throws `NoWindow`;
   that quirk is handled in `MainWindow.xaml.cs::OnOpenClick`.
 
+## In scope this chapter (M2-B1)
+
+- Real pointer-kind + pressure (spec §5.1): `PointerRoutedEventArgs.Pointer.
+  PointerDeviceType` (`Microsoft.UI.Input.PointerDeviceType.Pen/Touch/Mouse`)
+  classifies each event; `GetCurrentPoint(RenderSurface).Properties.Pressure`
+  supplies the pen's real 0.0-1.0 pressure (touch/mouse are pinned to 1.0,
+  same as before). The raw pressure value is passed through unrounded so the
+  core's §5.4 pressure-stuck detector sees genuine driver behavior.
+- Palm rejection (spec §5.2): every classified pointer event is routed
+  through `akapen_palm_route` — the same pure core state machine the mac
+  shell's `PalmGate` wraps — *before* it can reach `akapen_pointer`. Draw
+  (pen or mouse — a pen is always the intended input, a mouse is never a
+  palm) proceeds to drawing. Touch never draws: it always resolves to either
+  Navigate (a deliberate touch with no pen in play — routed for future
+  canvas pan/pinch, M2-D) or Ignore (a palm during pen contact or the
+  post-pen lock window); neither is fed to the drawing engine.
+  `MainWindow.xaml.cs` holds one caller-owned `AkapenPalmState` per window
+  (`_palmState`), matching the mac shell's one-per-canvas `PalmGate`.
+- `MainWindow.xaml.cs::PushMouseSample` is generalized to `PushPointerSample`
+  (kind + pressure + palm gate, then the same M2-A coordinate inversion as
+  before). The single `_mouseDown` bool becomes a `HashSet<uint>
+  _activePointerIds` keyed on `Pointer.PointerId`, because palm rejection's
+  whole point is a pen stroke and a resting palm touch being in contact *at
+  the same time* — a shared boolean would have the palm's Up wrongly end the
+  still-in-progress pen stroke. (Still a single in-progress *drawing* stroke
+  assumption — genuine simultaneous multi-touch drawing remains out of
+  scope.)
+- Spec §5.4 pressure-stuck warning: after a completed stroke (`Released`)
+  that reached the drawing engine, `akapen_pressure_stuck` is checked and
+  surfaced in a dedicated `PressureWarningText` TextBlock (kept separate from
+  `StatusText` so a save/open message can never silently clobber it, or vice
+  versa — the failure mode the mac shell's save() comment calls out having
+  hit once already).
+- `SwapChainPanel.ManipulationMode="None"` is now explicit in
+  `MainWindow.xaml`, so WinUI's gesture recognizer never intercepts a
+  multi-contact drag (e.g. a pen stroke alongside a resting palm) before our
+  pointer handlers + the palm gate see it — the WinUI analogue of the mac
+  shell's `allowedTouchTypes = [.direct]`.
+
 ## Not yet in scope (future M2 chapters)
 
-- **M2-B**: WM_POINTER + Wintab pen path. Replaces the mouse-only stub with
-  real pressure / tilt / device-kind.
-- **M2-C**: Palm rejection UI (spec §5.2), driving `akapen_palm_route`
-  identically to the mac shell's `PalmGate`.
-- **M2-D**: Tool switcher (Pen/Eraser), color palette, size slider, undo/
-  redo buttons — the equivalent of `SidePanelView` on the mac shell.
+- **M2-B2**: Wintab (WACOM's native API), the second pen path for drivers
+  with "Windows Ink" turned off (spec §5.1). `akapen_palm_route` and the
+  pointer-kind/pressure plumbing landed in M2-B1 above; only the Wintab
+  fallback input source itself remains.
+- **M2-D**: Touch-driven canvas pan/pinch (the palm gate's `Navigate` routing
+  is wired up and reachable from M2-B1, but nothing consumes it yet beyond a
+  status-bar note), tool switcher (Pen/Eraser), color palette, size slider,
+  undo/redo buttons — the equivalent of `SidePanelView` on the mac shell.
 - **M3**: Full shortcut table (spec §3), keyed off `akapen_resolve_key` so
   the shortcut map stays in the core (mac and Windows share one table).
   Also where the present pump graduates from a fixed-cadence
@@ -76,8 +114,8 @@ This project (`apps/windows`), by contrast, is the real M2 shell:
 - **MSIX packaging**: distributable artifact + auto-update. `WindowsPackageType`
   currently stays `None` so the dev loop is `dotnet build && dotnet run`.
 - **4K perf gate**: spec §6 headline numbers on real hardware, first
-  measurable once M2-B lands the real pen path (mouse throughput is not the
-  bottleneck).
+  measurable now that M2-B1 lands the real pen path (mouse throughput was
+  never the bottleneck).
 
 ## Retreat criterion (spec §7.4-4)
 

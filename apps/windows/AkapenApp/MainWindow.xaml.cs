@@ -1,4 +1,5 @@
-// Akapen main window (spec §7.4-4 / §9 M2, M2-A first-cut WinUI 3 shell).
+// Akapen main window (spec §7.4-4 / §9 M2 — WinUI 3 shell; M2-A first-cut
+// scaffold, M2-B1 real pointer kind/pressure + palm rejection).
 //
 // Responsibilities kept in this file (mirrors apps/mac/Sources/AkapenApp/
 // AppState.swift's role, folded into the window itself since M2-A has no
@@ -7,19 +8,28 @@
 //   - Bring up the WinUI 3 SwapChainPanel as the wgpu render surface
 //     (spec §7.4-6) via the ISwapChainPanelNative COM interop in
 //     Interop/SwapChainPanelNativeInterop.cs.
-//   - Feed mouse Pointer{Pressed,Moved,Released} into akapen_pointer
-//     (mouse kind, pressure 1.0) — WM_POINTER pen wiring is M2-B.
+//   - Feed Pointer{Pressed,Moved,Released,CaptureLost,Canceled} into akapen_pointer
+//     with the real device kind + pressure (spec §5.1: WinUI's
+//     PointerDeviceType / PointerPointProperties.Pressure — pen carries a
+//     real 0.0-1.0 pressure signal, touch/mouse are pinned to 1.0), routed
+//     through the core palm-rejection gate first (spec §5.2,
+//     akapen_palm_route — the same state machine the mac shell's PalmGate
+//     wraps). Wintab (the "Windows Ink off" fallback pen path, spec §5.1
+//     second route) is M2-B2.
 //   - Drive Open… (FileOpenPicker) and Save / Ctrl+S (akapen_export_to_dir).
 //   - Present one frame per DispatcherTimer tick via akapen_render_frame.
 //
 // Deliberately not here (kept for later M2 chapters, called out in
 // apps/windows/README.md so nobody accidentally starts adding them):
-//   - WM_POINTER + Wintab pen path (M2-B).
-//   - Palm-rejection routing (M2-C) via akapen_palm_route.
+//   - Wintab (WACOM's native API, spec §5.1 second route, needed when a
+//     driver has "Windows Ink" turned off) — M2-B2.
+//   - Touch-driven canvas pan/pinch: the palm gate's Navigate routing is
+//     wired up and reachable (a deliberate touch with no pen in play), but
+//     nothing consumes it yet beyond a status-bar note — M2-D.
 //   - Tool switcher / color picker / size slider / undo-redo UI (M2-D).
 //   - Settings pane (spec §4.7) covering output dir mode + suffixes.
 //   - Zoom / pan / rotate remap (view scale != 1, non-zero rotation).
-//     PushMouseSample inverts the *centered, scale-1* placement
+//     PushPointerSample inverts the *centered, scale-1* placement
 //     OnPresentTick renders (panel DIP size <-> image pixel size), which
 //     holds across ordinary window resizes since both sides read the
 //     panel's live ActualWidth/Height; it does not attempt zoom/pan, which
@@ -39,10 +49,12 @@
 // affinity holds without extra plumbing.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using Akapen.Native;
 using AkapenApp.Interop;
+using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -74,7 +86,7 @@ public sealed partial class MainWindow : Window
 
     // Image pixel size of the currently loaded engine (from akapen_size at
     // Open time). Needed to invert the render surface's centered placement
-    // back to image coordinates in PushMouseSample. Zero while no engine is
+    // back to image coordinates in PushPointerSample. Zero while no engine is
     // loaded.
     private uint _imgWidth;
     private uint _imgHeight;
@@ -92,10 +104,41 @@ public sealed partial class MainWindow : Window
     // compositor-synced pump is left to M3 (see README).
     private DispatcherTimer? _presentTimer;
 
-    // Mouse drag state (M2-A: mouse only, one pointer at a time). WM_POINTER
-    // pen/pressure lands in M2-B and will replace this bool with a per-
-    // pointer table keyed on PointerId.
-    private bool _mouseDown;
+    // Pointer IDs currently captured for a potential stroke — a Down that
+    // reached PushPointerSample and wasn't rejected as "outside the image".
+    // This replaces M2-A's single `_mouseDown` bool with a per-PointerId set
+    // because palm rejection's entire point is a pen stroke and a resting
+    // palm touch being in contact *at the same time*: a shared boolean would
+    // have the palm's Up wrongly end the still-in-progress pen stroke.
+    // Moved/Released/CaptureLost consult this set to decide whether to keep
+    // routing a given contact; PushPointerSample itself doesn't touch it — it
+    // only knows about drawing, not capture bookkeeping. Still one active
+    // *drawing* stroke assumption carries over from M2-A (no per-pointer
+    // stroke/undo buffer) — genuine simultaneous multi-touch drawing is not
+    // in scope here, only "pen draws while a palm rests nearby".
+    private readonly HashSet<uint> _activePointerIds = new();
+
+    // Last known panel-space (DIP) position each currently-tracked pointer
+    // reported while still live, keyed by PointerId. Read back only when
+    // PointerCanceled fires for that pointer, whose own PointerPoint.Position
+    // is not reliable per WinRT docs (the contact can already be gone from
+    // the digitizer) — see OnRenderSurfacePointerCanceled. Populated by
+    // PushPointerSample on every in-bounds sample (Down/Move/Release/
+    // Canceled alike) and removed once a pointer's stroke ends (Released/
+    // CaptureLost/Canceled, or a Down that never became active), so it never
+    // outlives the pointer it describes.
+    private readonly Dictionary<uint, Windows.Foundation.Point> _lastPointerPosition = new();
+
+    // Palm-rejection state (spec §5.2) — the same pure core state machine the
+    // mac shell's `PalmGate` wraps (apps/mac/Sources/AkapenKit/AkapenEngine.swift).
+    // Held as a plain struct field, not reset between images (the pen-
+    // priority lock is about physical timing since the pen last lifted, not
+    // which image is open), and passed by pointer into akapen_palm_route,
+    // which reads and updates it in place. A freshly-constructed MainWindow
+    // gets it default-initialized to all-zero (pen_down = 0, lock_active = 0,
+    // lock_until_ms = 0), which is exactly AkapenPalmState's documented
+    // "no pen seen yet" — no explicit constructor call needed.
+    private AkapenPalmState _palmState;
 
     // Backing DPI scale factor as reported by the SwapChainPanel's XamlRoot
     // at attach time. For M2-A we don't remap on DPI changes (no PMv2
@@ -209,94 +252,258 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    // ── Pointer input (M2-A: mouse only; pen is M2-B) ──────────────────────
+    // ── Pointer input (M2-B1: pen + touch + mouse, palm-rejected) ──────────
 
     private void OnRenderSurfacePointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        // Left button only for now (the mac shell's CanvasView only listens
-        // to primary drags in M1 too). Right/middle stay for future context
-        // menus.
+        // Primary contact only (the mac shell's CanvasView only listens to
+        // primary drags too). This one check already generalizes across
+        // kinds: WinUI reports IsLeftButtonPressed == true for the primary
+        // contact on pen (tip down) and touch alike, not just a mouse's left
+        // button. Right/middle-button mouse stays for future context menus.
         var props = e.GetCurrentPoint((UIElement)sender).Properties;
         if (!props.IsLeftButtonPressed) return;
 
-        // Capturing keeps subsequent moves/releases routing here even if the
-        // pointer leaves the panel briefly.
-        ((UIElement)sender).CapturePointer(e.Pointer);
-        _mouseDown = true;
-        if (!PushMouseSample(sender, e, phase: 0 /*Down*/))
+        // Capturing keeps subsequent moves/releases for *this* pointer
+        // routing here even if it leaves the panel briefly. Captures are
+        // scoped per-PointerId by WinUI, so a pen stroke and a concurrently
+        // resting palm touch can each hold their own capture without
+        // stepping on each other. CapturePointer can fail (WinRT docs: most
+        // often because the pointer was already released by the time this
+        // call runs) — its return value used to be ignored, which meant we'd
+        // still track this pointer as active and might never see its Up if
+        // it wandered off RenderSurface without a real capture backing it.
+        uint id = e.Pointer.PointerId;
+        bool captured = ((UIElement)sender).CapturePointer(e.Pointer);
+        if (!captured)
         {
-            // Pressed outside the displayed image (see PushMouseSample):
-            // don't start a stroke, release the capture we just took.
-            _mouseDown = false;
-            ((UIElement)sender).ReleasePointerCaptures();
+            // Capture failed (WinRT docs: most often because the pointer was
+            // already released by the time this call runs). Skip the palm gate
+            // entirely — if we sent Down but never got its Up, palm.rs would
+            // hold pen_down forever and start rejecting every touch as palm.
+            // The mac shell's send() has no "Down without Up" path either
+            // (CanvasView.swift; touchesCancelled maps to phase=.up), so this
+            // matches the mac contract: no capture → no stroke lifecycle at
+            // all, palm state stays untouched, and a real concurrent pen
+            // contact will still arm pen_down through its own successful Down.
+            _lastPointerPosition.Remove(id);
+            return;
+        }
+
+        _activePointerIds.Add(id);
+        if (!PushPointerSample(sender, e, phase: 0 /*Down*/))
+        {
+            // Pressed outside the displayed image (see PushPointerSample):
+            // don't start a stroke, release just this pointer's capture.
+            _activePointerIds.Remove(id);
+            ((UIElement)sender).ReleasePointerCapture(e.Pointer);
         }
     }
 
     private void OnRenderSurfacePointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        if (!_mouseDown) return;
-        PushMouseSample(sender, e, phase: 1 /*Move*/);
+        if (!_activePointerIds.Contains(e.Pointer.PointerId)) return;
+        PushPointerSample(sender, e, phase: 1 /*Move*/);
     }
 
     private void OnRenderSurfacePointerReleased(object sender, PointerRoutedEventArgs e)
     {
-        if (!_mouseDown) return;
-        _mouseDown = false;
-        PushMouseSample(sender, e, phase: 2 /*Up*/);
-        ((UIElement)sender).ReleasePointerCaptures();
+        uint id = e.Pointer.PointerId;
+        if (!_activePointerIds.Remove(id)) return;
+        PushPointerSample(sender, e, phase: 2 /*Up*/);
+        _lastPointerPosition.Remove(id);
+        ((UIElement)sender).ReleasePointerCapture(e.Pointer);
     }
 
     private void OnRenderSurfacePointerCaptureLost(object sender, PointerRoutedEventArgs e)
     {
-        // Alt-tab / window drag / another element steals capture: end the
-        // stroke cleanly so the core's per-pointer buffer doesn't stay open.
-        if (_mouseDown)
+        // Alt-tab / window drag / another element steals capture: end that
+        // pointer's stroke cleanly so the core's per-pointer buffer doesn't
+        // stay open. Only affects the pointer that actually lost capture —
+        // any other pointer still tracked in _activePointerIds is untouched.
+        uint id = e.Pointer.PointerId;
+        if (_activePointerIds.Remove(id))
         {
-            _mouseDown = false;
-            PushMouseSample(sender, e, phase: 2 /*Up*/);
+            PushPointerSample(sender, e, phase: 2 /*Up*/);
         }
+        _lastPointerPosition.Remove(id);
+    }
+
+    private void OnRenderSurfacePointerCanceled(object sender, PointerRoutedEventArgs e)
+    {
+        // PointerCanceled can fire in place of Released — WinRT docs call it
+        // out as a substitute the system can raise instead (e.g. the contact
+        // leaves the digitizer's sensing range, or the OS reclaims it for its
+        // own gesture) — mirrors the mac shell's touchesCancelled ->
+        // gateTouches(..., phase: .up) (CanvasView.swift:320). Treated
+        // exactly like Released so the palm gate's pen_down/lock state and
+        // this pointer's capture don't get left open.
+        uint id = e.Pointer.PointerId;
+        _lastPointerPosition.TryGetValue(id, out var lastPosition);
+        bool wasActive = _activePointerIds.Remove(id);
+        _lastPointerPosition.Remove(id);
+        if (!wasActive) return;
+
+        // The canceled event's own PointerPoint.Position is not reliable
+        // here (the contact can already be gone) — fall back to the last
+        // position this pointer reported while it was still live so the
+        // stroke's closing Up lands at a sane coordinate instead of
+        // whatever (possibly (0,0)) WinUI reports for a canceled contact.
+        PushPointerSample(sender, e, phase: 2 /*Up*/, positionOverride: lastPosition);
+        ((UIElement)sender).ReleasePointerCapture(e.Pointer);
     }
 
     // Returns false only when phase is Down (0) and the press landed outside
-    // the displayed image — callers use that to avoid starting a stroke.
-    // Move/Release always send (phase != 0 never returns false) so an
-    // in-progress stroke can be dragged past the image edge and still
-    // deliver its Up sample, matching a canvas-edge drag-out feel.
-    private bool PushMouseSample(object sender, PointerRoutedEventArgs e, int phase)
+    // the displayed image — callers use that to avoid starting a stroke and
+    // to undo the pointer capture they just took. This bounds check now runs
+    // BEFORE the palm gate (spec §5.2 fix): an out-of-image Down is rejected
+    // outright and never reaches akapen_palm_route at all, so it can never
+    // leave the core's pen_down/lock state stuck. (Previously the gate ran
+    // first: a pen Down outside the image still set pen_down = true there,
+    // and since the caller correctly never started a stroke for it, no
+    // matching Up was ever delivered to clear that state — pen_down stayed
+    // stuck true and every Touch afterward was misrouted as a palm until some
+    // *other*, in-bounds pen stroke happened to complete and clear it.) A
+    // Down that lands inside the image but the palm gate routes to Navigate
+    // or Ignore still returns true (it is an accepted contact, just not a
+    // drawing one) so the caller keeps tracking it and still delivers its
+    // eventual Up. Move/Release/Canceled always return true (phase != 0
+    // never returns false) so an in-progress stroke can be dragged past the
+    // image edge and still deliver its Up sample, matching a canvas-edge
+    // drag-out feel.
+    //
+    // positionOverride: used only by OnRenderSurfacePointerCanceled, whose
+    // own PointerPoint.Position can be unreliable — the last known live
+    // position for that pointer is supplied instead of reading
+    // point.Position here.
+    private bool PushPointerSample(
+        object sender,
+        PointerRoutedEventArgs e,
+        int phase,
+        Windows.Foundation.Point? positionOverride = null)
     {
         if (_engine == IntPtr.Zero) return true;
-        var panel = (FrameworkElement)sender;
-        var pt = e.GetCurrentPoint((UIElement)sender).Position;
 
-        // M2-A coordinate mapping: invert the render surface's centered
-        // placement (OnPresentTick's AkapenViewTransform: center = physical
-        // surface size / 2, scale = _scaleFactor). Converting that forward
-        // mapping from physical pixels back to the DIPs PointerRoutedEventArgs
-        // reports cancels the scale factor algebraically, leaving exactly the
-        // 1:1-in-DIP inverse below (panel DIP size in, image pixel size out).
-        // Reading panel.ActualWidth/Height live (rather than a cached field)
-        // keeps this correct across ordinary window resizes too. What is
-        // still not handled here is zoom/pan/rotate (view scale != 1 or
-        // non-zero rotation) — that remap is M2-D scope (see class doc).
+        var point = e.GetCurrentPoint((UIElement)sender);
+        uint pointerId = e.Pointer.PointerId;
+
+        // Pointer-kind classification (spec §5.1): WinUI's PointerDeviceType
+        // tells pen/touch/mouse apart; only Pen carries a genuine pressure
+        // signal (PointerPointProperties.Pressure, 0.0-1.0). The raw value is
+        // passed straight through with no shell-side rounding/clamping, so
+        // the core's pressure_stuck detector (§5.4) sees real driver
+        // behavior rather than a shell-smoothed one.
+        int kind;
+        double pressure;
+        switch (e.Pointer.PointerDeviceType)
+        {
+            case PointerDeviceType.Pen:
+                kind = 0 /*Pen*/;
+                pressure = point.Properties.Pressure;
+                break;
+            case PointerDeviceType.Touch:
+                kind = 1 /*Touch*/;
+                pressure = 1.0; // WinUI reports no meaningful touch pressure
+                break;
+            default:
+                kind = 2 /*Mouse*/;
+                pressure = 1.0;
+                break;
+        }
+
+        // Coordinate mapping (unchanged M2-A math, just computed ahead of the
+        // palm gate now — see the bounds-check note below): invert the
+        // render surface's centered placement (OnPresentTick's
+        // AkapenViewTransform: center = physical surface size / 2, scale =
+        // _scaleFactor). Converting that forward mapping from physical
+        // pixels back to the DIPs PointerRoutedEventArgs reports cancels the
+        // scale factor algebraically, leaving exactly the 1:1-in-DIP inverse
+        // below (panel DIP size in, image pixel size out). Reading
+        // panel.ActualWidth/Height live (rather than a cached field) keeps
+        // this correct across ordinary window resizes too. What is still not
+        // handled here is zoom/pan/rotate (view scale != 1 or non-zero
+        // rotation) — that remap is M2-D scope (see class doc).
+        var panel = (FrameworkElement)sender;
+        var pt = positionOverride ?? point.Position;
         double panelW = panel.ActualWidth;
         double panelH = panel.ActualHeight;
         double ex = _imgWidth / 2.0 + (pt.X - panelW / 2.0);
         double ey = _imgHeight / 2.0 + (pt.Y - panelH / 2.0);
-
         bool inBounds = ex >= 0 && ex <= _imgWidth && ey >= 0 && ey <= _imgHeight;
+
         if (phase == 0 /*Down*/ && !inBounds)
         {
             return false; // pressed outside the image: caller skips the stroke
         }
 
+        if (!positionOverride.HasValue)
+        {
+            _lastPointerPosition[pointerId] = pt;
+        }
+
+        // Palm-rejection gate (spec §5.2): every classified pointer event is
+        // routed through the core state machine *before* it can reach
+        // akapen_pointer — mirrors the mac shell's `palmGate.route(...)` call
+        // just ahead of `send` in CanvasView.swift. `_palmState` is the
+        // caller-owned AkapenPalmState the core reads/updates in place;
+        // Environment.TickCount64 is a monotonic ms clock, matching what the
+        // core's lock-expiry math (now_ms) expects.
+        long nowMs = Environment.TickCount64;
+        int route;
+        unsafe
+        {
+            fixed (AkapenPalmState* statePtr = &_palmState)
+            {
+                route = NativeMethods.akapen_palm_route(statePtr, kind, phase, nowMs);
+            }
+        }
+        if (route == 2 /*AKAPEN_ROUTE_IGNORE*/)
+        {
+            return true; // palm during pen contact/lock: silently dropped
+        }
+        if (route == 1 /*AKAPEN_ROUTE_NAVIGATE*/)
+        {
+            // A deliberate touch with no pen in play. Canvas pan/pinch is
+            // M2-D scope; for now make it visible instead of silently eating
+            // it, once per press (not on every Move — that would spam the
+            // status bar across a whole drag).
+            if (phase == 0 /*Down*/)
+            {
+                SetStatus("Touch detected — pan/zoom isn't wired up yet; draw with the pen or mouse.");
+            }
+            return true;
+        }
+
+        // route == 0 (AKAPEN_ROUTE_DRAW): existing M2-A coordinate mapping.
+        // Only pen and mouse ever route here — touch always resolves to
+        // Navigate or Ignore above and never draws (spec §5.2, palm.rs).
         unsafe
         {
             NativeMethods.akapen_pointer(
                 (AkapenEngine*)_engine,
                 ex, ey,
-                pressure: 1.0,
-                kind: 2 /*Mouse*/,
-                phase: phase);
+                pressure,
+                kind,
+                phase);
+        }
+
+        if (phase == 2 /*Up*/)
+        {
+            // Spec §5.4: surface (never silently swallow) a driver/tablet
+            // that fed a constant pressure for the whole stroke. Checked
+            // unconditionally on Up regardless of device kind, mirroring
+            // AppState.pointer on mac (`pressureWarning = e.pressureStuck` on
+            // every `.up`, not gated to kind == pen) — the core's own
+            // stuck-detector (engine.rs::commit) is gated on the *drawing
+            // tool* (Pen vs Eraser), not the input device, so a mouse-drawn
+            // stroke and a pen-drawn stroke are judged by the exact same
+            // rule here too.
+            bool stuck;
+            unsafe
+            {
+                stuck = NativeMethods.akapen_pressure_stuck((AkapenEngine*)_engine) != 0;
+            }
+            SetPressureWarning(stuck);
         }
         return true;
     }
@@ -382,6 +589,10 @@ public sealed partial class MainWindow : Window
         _presentTimer?.Start();
         SaveButton.IsEnabled = true;
         SetStatus($"{Path.GetFileName(path)} — {w}x{h}");
+        // Fresh image, fresh read: a stuck-pressure warning from the previous
+        // image shouldn't linger (mirrors AppState.open resetting
+        // `pressureWarning = false` on mac).
+        SetPressureWarning(false);
     }
 
     // ── GPU surface attach / detach ────────────────────────────────────────
@@ -538,5 +749,13 @@ public sealed partial class MainWindow : Window
     private void SetStatus(string text)
     {
         StatusText.Text = text;
+    }
+
+    // Spec §5.4 pressure-stuck warning. Kept in its own TextBlock (see
+    // MainWindow.xaml's status-bar comment) so it never fights with
+    // save/open messages in StatusText for the same line.
+    private void SetPressureWarning(bool warned)
+    {
+        PressureWarningText.Visibility = warned ? Visibility.Visible : Visibility.Collapsed;
     }
 }
