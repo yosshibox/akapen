@@ -17,5 +17,12 @@ The three CI faces (mac / dotnet / node) all link against the same C ABI in
 `crates/akapen-ffi`, so an ABI-breaking change fails at least one face on the
 same push that lands it. This is what "M1 併走条件" in the spec means.
 
+The hand-written C header `crates/akapen-ffi/include/akapen.h` is the single
+source of truth; a byte-identical copy lives at
+`apps/mac/Sources/CAkapen/include/akapen.h` for SwiftPM to consume, and
+`scripts/check-header-parity.sh` (run as its own CI job) enforces the two stay
+in lockstep. The .NET (csbindgen) and Node (napi-rs) faces read the Rust
+source directly, so they need no header parity of their own.
+
 The eventual compatibility contract these expose is the 3-file export +
 `VectorDoc` schema (`veda-annot-1`, per-point pressure required).

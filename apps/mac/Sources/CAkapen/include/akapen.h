@@ -5,6 +5,15 @@
  * this header is the minimal-common-denominator surface every language binding
  * wraps (mac SwiftUI now; .NET / Node later).
  *
+ * Two physical copies of this file are checked in — the canonical copy is
+ * `crates/akapen-ffi/include/akapen.h` (referenced by the akapen-ffi crate
+ * and any C consumer of the produced dylib), mirrored at
+ * `apps/mac/Sources/CAkapen/include/akapen.h` which SwiftPM reads when
+ * building the mac shell (SwiftPM discourages targets from resolving header
+ * paths outside the Swift package root, hence the copy rather than a symlink
+ * or modulemap escape). `scripts/check-header-parity.sh` enforces
+ * byte-identical parity in CI so a lone edit fails on the same push.
+ *
  * Threading: an AkapenEngine handle is not thread-safe; drive it from one
  * thread. Strings are borrowed UTF-8, NUL-terminated. Colors are packed
  * 0xRRGGBBAA.
@@ -21,8 +30,14 @@ extern "C" {
 
 typedef struct AkapenEngine AkapenEngine;
 
-/* Tool codes (akapen_set_tool). */
-enum { AKAPEN_TOOL_PEN = 0, AKAPEN_TOOL_ERASER = 1 };
+/* Tool codes (akapen_set_tool). Values 0..6 match the Rust enum order in
+ * crates/akapen-ffi/src/lib.rs; unknown values are treated as Pen. */
+enum {
+    AKAPEN_TOOL_PEN = 0, AKAPEN_TOOL_ERASER = 1,
+    AKAPEN_TOOL_LINE = 2, AKAPEN_TOOL_ARROW = 3,
+    AKAPEN_TOOL_RECT = 4, AKAPEN_TOOL_ELLIPSE = 5,
+    AKAPEN_TOOL_TEXT = 6
+};
 /* Pointer kind (akapen_pointer). */
 enum { AKAPEN_KIND_PEN = 0, AKAPEN_KIND_TOUCH = 1, AKAPEN_KIND_MOUSE = 2 };
 /* Pointer phase (akapen_pointer). */
@@ -96,8 +111,9 @@ enum {
     AKAPEN_PK_PAGE_UP = 19, AKAPEN_PK_PAGE_DOWN = 20
 };
 
-/* Action codes returned by akapen_resolve_key. 0 = no action. Tool codes
- * 1..7 match akapen_set_tool numbering. */
+/* Action codes returned by akapen_resolve_key. 0 = no action. The tool
+ * action codes (1..7 here) map to akapen_set_tool inputs (0..6, Pen..Text)
+ * by subtracting one; the offset exists so 0 stays reserved for NONE. */
 enum {
     AKAPEN_ACT_NONE = 0,
     AKAPEN_ACT_TOOL_PEN = 1, AKAPEN_ACT_TOOL_ERASER = 2, AKAPEN_ACT_TOOL_LINE = 3,
@@ -156,6 +172,15 @@ typedef struct AkapenPalmState {
  * (AKAPEN_ROUTE_IGNORE) and open for pen/mouse (AKAPEN_ROUTE_DRAW).
  */
 int32_t akapen_palm_route(AkapenPalmState *state, int kind, int phase, int64_t now_ms);
+
+/*
+ * Enables a minimal stderr diagnostic logger (warn level and above) for this
+ * process. Off by default. Call once, early -- before akapen_render_attach if
+ * diagnosing a surface bring-up failure (some wgpu-core validation failures
+ * only log their specific underlying reason, not just the returned generic
+ * error). Idempotent.
+ */
+void akapen_enable_diagnostic_logging(void);
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Phase e: GPU surface path (spec §7.4-6 "GPU 描画(wgpu: Metal/D3D12)").
@@ -229,6 +254,26 @@ void akapen_render_detach(AkapenEngine *engine);
 
 /* Returns 1 if a GPU surface is currently attached (GPU path active), else 0. */
 int akapen_render_available(AkapenEngine *engine);
+
+/*
+ * Writes a short NUL-terminated diagnostic line describing the attached
+ * surface's actual backend/present-mode/frame-latency (e.g.
+ * "backend=Dx12 present_mode=Fifo max_frame_latency=1") into `out`. Same
+ * size-probe convention as akapen_composite_rgba: returns the bytes needed
+ * (incl. NUL); call once with out=NULL/out_len=0 to size the buffer. Returns
+ * 0 if no surface is attached.
+ */
+size_t akapen_render_backend_info(AkapenEngine *engine, char *out, size_t out_len);
+
+/*
+ * Writes a short NUL-terminated message describing why the most recent
+ * akapen_render_attach call failed (a bare code-4 return otherwise collapses
+ * four distinct underlying failures: no adapter / device request failed /
+ * surface creation failed / unsupported kind). Same size-probe convention;
+ * returns bytes needed (incl. NUL). Returns 0 if the last attach succeeded or
+ * none was attempted.
+ */
+size_t akapen_render_last_attach_error(AkapenEngine *engine, char *out, size_t out_len);
 
 #ifdef __cplusplus
 }
