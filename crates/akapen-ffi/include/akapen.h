@@ -76,8 +76,22 @@ int akapen_pressure_stuck(AkapenEngine *engine);
 size_t akapen_composite_rgba(AkapenEngine *engine, uint8_t *out, size_t out_len);
 
 /*
+ * Sets the artifact-name suffixes used by akapen_export_to_dir (spec §4.7).
+ * Default (also restored by passing NULL for either argument) is
+ * flat_suffix = "review" / strokes_suffix = "strokes" (matches §4.3). Passing
+ * NULL for one argument resets only that field to the default; the other keeps
+ * its previous value. Empty / whitespace-only suffixes and suffixes containing
+ * a path separator ('/' or '\\') or a dot ('.') silently fall back to the
+ * default for that field (a second defensive check on top of the shell UI).
+ */
+void akapen_set_output_naming(AkapenEngine *engine,
+                              const char *flat_suffix, const char *strokes_suffix);
+
+/*
  * Writes the 3-file export into dir using stem as the base name (collision-free
- * naming). Returns 0 on success, non-zero on failure.
+ * naming). Uses the engine's current output-naming suffixes (see
+ * akapen_set_output_naming; default "review" / "strokes"). Returns 0 on
+ * success, non-zero on failure.
  */
 int akapen_export_to_dir(AkapenEngine *engine, const char *dir, const char *stem);
 

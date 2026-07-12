@@ -75,6 +75,18 @@ public enum AkapenExportError: Error {
     case unknown(Int32) // any other non-zero code
 }
 
+/// Calls `body` with a NUL-terminated UTF-8 C string for `s`, or with a NULL
+/// pointer when `s == nil`. Used by the setter wrappers whose C ABI accepts
+/// NULL as "reset that argument to default" (e.g. `akapen_set_output_naming`).
+func withOptionalCString<R>(
+    _ s: String?, _ body: (UnsafePointer<CChar>?) -> R
+) -> R {
+    if let s = s {
+        return s.withCString { body($0) }
+    }
+    return body(nil)
+}
+
 /// A decoded RGBA frame the UI can render.
 public struct AkapenImage {
     public let width: Int
@@ -153,6 +165,22 @@ public final class AkapenEngine {
             _ = akapen_composite_rgba(handle, p.baseAddress, p.count)
         }
         return AkapenImage(width: w, height: h, rgba: buf)
+    }
+
+    /// Sets the artifact-name suffixes (spec §4.7). Passing `nil` for either
+    /// argument resets *only* that field to the built-in default (`review` /
+    /// `strokes`). The C ABI additionally rejects suffixes that contain a path
+    /// separator or a dot; the SwiftUI settings panel does the same up front,
+    /// so callers here can pass through user input directly.
+    public func setOutputNaming(flatSuffix: String?, strokesSuffix: String?) {
+        // `withOptionalCString` lets us pass NULL for a nil argument (matching
+        // the C ABI's "reset that field to default" semantics) without needing
+        // a separate branch.
+        withOptionalCString(flatSuffix) { flat in
+            withOptionalCString(strokesSuffix) { strokes in
+                akapen_set_output_naming(handle, flat, strokes)
+            }
+        }
     }
 
     /// Writes the 3-file export into `dir` using `stem` as the base name.

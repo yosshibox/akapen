@@ -109,22 +109,93 @@ final class AppState: ObservableObject {
         applyToolState()
     }
 
-    /// Saves the 3-file export into `<input folder>/_review/` (spec §4.3).
+    /// Saves the 3-file export into the resolved output directory (spec §4.3).
+    /// 出力先とファイル名の接尾辞は §4.7 の設定に従う(既定は
+    /// `<入力フォルダ>/_review/` と `review` / `strokes`)。設定側の入力検証を
+    /// すり抜けた無効値も、ここと C ABI 側 `sanitize_suffix` で二段構えに
+    /// フォールバックする。
     @discardableResult
     func save() -> Bool {
         guard let e = engine, let url = currentURL else { return false }
-        let dir = url.deletingLastPathComponent().appendingPathComponent("_review")
+        let (dir, fallbackWarning) = resolveOutputDir(input: url)
+        let naming = resolveOutputNaming()
         let stem = url.deletingPathExtension().lastPathComponent
+        // 命名の接尾辞は engine に持たせる(§4.7 の setter パターン)。ここで
+        // 毎回上書きしておけば、設定変更が次の save から確実に反映される。
+        e.setOutputNaming(flatSuffix: naming.flat, strokesSuffix: naming.strokes)
         do {
             try e.export(toDir: dir.path, stem: stem)
             hasUnsavedStrokes = false
-            statusText = "Saved review for \(url.lastPathComponent) → _review/"
+            // フォールバックが起きたときは、成功メッセージがそれを上書きして
+            // 消してしまわないよう同じ statusText に警告を合流させる(Codex
+            // レビュー指摘: 警告が save 成功で見えなくなっていた)。
+            var message = "Saved review for \(url.lastPathComponent) → \(dir.path)/"
+            if let fallbackWarning {
+                message += " (\(fallbackWarning))"
+            }
+            statusText = message
             return true
         } catch {
             statusText = "Save failed for \(url.lastPathComponent): "
                 + "\(saveFailureCause(error)). Frame not changed."
             return false
         }
+    }
+
+    /// §4.7 の出力先モードに従って書き出しフォルダを決める。設定が無効(空・
+    /// パス区切りや `.`/`..` を含むサブフォルダ名、存在しない固定パス、など)
+    /// なら `<入力フォルダ>/_review/` にフォールバックする。フォールバックが
+    /// 起きた場合は、その理由を第2要素で返す(呼び出し側の statusText に
+    /// 合流させ、成功メッセージで警告が消えないようにするため)。
+    private func resolveOutputDir(input: URL) -> (dir: URL, fallbackWarning: String?) {
+        let defaults = UserDefaults.standard
+        let modeRaw = defaults.string(forKey: AkapenSettingsKey.dirMode)
+            ?? AkapenSettingsDefault.dirMode.rawValue
+        let mode = AkapenOutputDirMode(rawValue: modeRaw) ?? AkapenSettingsDefault.dirMode
+
+        switch mode {
+        case .besideInput:
+            let raw = defaults.string(forKey: AkapenSettingsKey.subfolderName)
+                ?? AkapenSettingsDefault.subfolderName
+            if isValidSubfolder(raw) {
+                let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                return (input.deletingLastPathComponent().appendingPathComponent(name), nil)
+            }
+            return (
+                input.deletingLastPathComponent()
+                    .appendingPathComponent(AkapenSettingsDefault.subfolderName),
+                "設定のサブフォルダ名が無効なので \(AkapenSettingsDefault.subfolderName)/ にフォールバック"
+            )
+
+        case .fixedAbsolute:
+            let raw = defaults.string(forKey: AkapenSettingsKey.fixedDir)
+                ?? AkapenSettingsDefault.fixedDir
+            if isValidFixedDir(raw) {
+                return (URL(fileURLWithPath: raw.trimmingCharacters(in: .whitespacesAndNewlines)), nil)
+            }
+            return (
+                input.deletingLastPathComponent()
+                    .appendingPathComponent(AkapenSettingsDefault.subfolderName),
+                "設定の固定パスが無効なので \(AkapenSettingsDefault.subfolderName)/ にフォールバック"
+            )
+        }
+    }
+
+    /// §4.7 の接尾辞設定を読み取る。無効な値はフィールドごとに default に落とす
+    /// (C ABI 側でも同じ二段目チェックが走る)。
+    private func resolveOutputNaming() -> (flat: String, strokes: String) {
+        let defaults = UserDefaults.standard
+        let flatRaw = defaults.string(forKey: AkapenSettingsKey.flatSuffix)
+            ?? AkapenSettingsDefault.flatSuffix
+        let strokesRaw = defaults.string(forKey: AkapenSettingsKey.strokesSuffix)
+            ?? AkapenSettingsDefault.strokesSuffix
+        let flat = isValidSuffix(flatRaw)
+            ? flatRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+            : AkapenSettingsDefault.flatSuffix
+        let strokes = isValidSuffix(strokesRaw)
+            ? strokesRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+            : AkapenSettingsDefault.strokesSuffix
+        return (flat, strokes)
     }
 
     /// Maps an export failure to a short, human-readable cause for the status bar

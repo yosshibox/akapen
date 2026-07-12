@@ -55,6 +55,13 @@ pub struct AkapenEngine {
     /// [`akapen_render_last_attach_error`] instead of guessing from the code
     /// alone.
     last_attach_error: Option<String>,
+    /// Configurable artifact-name suffixes (spec §4.7). Kept on the engine so
+    /// the shell can set it once (via [`akapen_set_output_naming`]) and every
+    /// subsequent [`akapen_export_to_dir`] call picks it up without threading
+    /// the values through each export. `OutputNaming::default()` (`review` /
+    /// `strokes`) preserves the pre-§4.7 filename layout, so an unset value is
+    /// indistinguishable from the original hard-coded behavior.
+    naming: OutputNaming,
 }
 
 /// Folds a newly-reported [`BakeDelta`] into the accumulated one held between
@@ -164,6 +171,7 @@ pub unsafe extern "C" fn akapen_open_image(path: *const c_char) -> *mut AkapenEn
                 gpu: None,
                 pending: BakeDelta::None,
                 last_attach_error: None,
+                naming: OutputNaming::default(),
             }))
         }
         Err(_) => std::ptr::null_mut(),
@@ -181,6 +189,7 @@ pub extern "C" fn akapen_new(width: u32, height: u32) -> *mut AkapenEngine {
         gpu: None,
         pending: BakeDelta::None,
         last_attach_error: None,
+        naming: OutputNaming::default(),
     }))
 }
 
@@ -244,6 +253,48 @@ pub unsafe extern "C" fn akapen_set_size(engine: *mut AkapenEngine, px: f32) {
     if let Some(e) = as_engine(engine) {
         e.inner.set_size(px);
     }
+}
+
+/// Sets the artifact-name suffixes used by [`akapen_export_to_dir`] (spec §4.7).
+///
+/// The default (also restored by passing NULL for either argument) is
+/// `flat_suffix = "review"` / `strokes_suffix = "strokes"`, matching §4.3 and
+/// the pre-§4.7 filename layout. Passing NULL for one argument resets *only*
+/// that field to the default; the other keeps its previous value.
+///
+/// Suffixes are trimmed and validated: an empty or whitespace-only string, or
+/// one containing a path separator (`/` or `\`) or a dot (`.`), silently falls
+/// back to the default for that field. This is the same defensive posture the
+/// SwiftUI settings panel takes on invalid input (spec §4.7), applied a second
+/// time here so a bad value from any C ABI consumer never lands on disk.
+///
+/// # Safety
+/// `flat_suffix` and `strokes_suffix` must each be NULL or a valid
+/// NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn akapen_set_output_naming(
+    engine: *mut AkapenEngine,
+    flat_suffix: *const c_char,
+    strokes_suffix: *const c_char,
+) {
+    let Some(e) = as_engine(engine) else {
+        return;
+    };
+    let default = OutputNaming::default();
+    e.naming.flat_suffix = sanitize_suffix(flat_suffix).unwrap_or(default.flat_suffix);
+    e.naming.strokes_suffix = sanitize_suffix(strokes_suffix).unwrap_or(default.strokes_suffix);
+}
+
+/// Reads a C string as an artifact-name suffix, or returns `None` if the value
+/// is unusable (null, non-UTF-8, empty/whitespace-only, or contains a path
+/// separator or dot). The caller substitutes the default suffix for `None`.
+fn sanitize_suffix(ptr: *const c_char) -> Option<String> {
+    let s = unsafe { cstr(ptr) }?;
+    let trimmed = s.trim();
+    if trimmed.is_empty() || trimmed.contains(['/', '\\', '.']) {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 /// Sets the pressure curve: 0=Normal, 1=Soft, 2=Hard.
@@ -350,6 +401,12 @@ pub unsafe extern "C" fn akapen_composite_rgba(
 
 /// Writes the 3-file export (transparent strokes PNG / flat PNG / vector JSON)
 /// into `dir`, using `stem` as the base filename with collision-free naming.
+/// The artifact suffixes (default `review` / `strokes`) come from the engine's
+/// current [`OutputNaming`], which the shell can change via
+/// [`akapen_set_output_naming`] (spec §4.7). An engine that never had the
+/// setter called (or was reset to the default) keeps the pre-§4.7 filename
+/// layout so this call is backward-compatible.
+///
 /// Returns 0 on success, non-zero on failure.
 ///
 /// # Safety
@@ -366,9 +423,8 @@ pub unsafe extern "C" fn akapen_export_to_dir(
     if std::fs::create_dir_all(dir).is_err() {
         return 2;
     }
-    let naming = OutputNaming::default();
     let pseudo_input = Path::new(dir).join(format!("{stem}.png"));
-    let target = resolve_target(&pseudo_input, dir, &naming, |p| p.exists());
+    let target = resolve_target(&pseudo_input, dir, &e.naming, |p| p.exists());
     let out = e.inner.export();
     let vector_json = match out.vector.to_json() {
         Ok(j) => j,
@@ -974,6 +1030,150 @@ mod tests {
             akapen_free(std::ptr::null_mut());
             akapen_undo(std::ptr::null_mut());
             assert_eq!(akapen_pressure_stuck(std::ptr::null_mut()), 0);
+            // The §4.7 setter also tolerates a null handle without crashing.
+            akapen_set_output_naming(std::ptr::null_mut(), std::ptr::null(), std::ptr::null());
+        }
+    }
+
+    // ── Output naming setter (spec §4.7) ──
+
+    #[test]
+    fn set_output_naming_applies_to_export() {
+        // Custom suffixes must appear in the resulting file names, and the
+        // engine must keep them across exports (setter is sticky, not per-call).
+        let e = akapen_new(16, 16);
+        assert!(!e.is_null());
+        unsafe {
+            let flat = CString::new("akapen").unwrap();
+            let strokes = CString::new("ink").unwrap();
+            akapen_set_output_naming(e, flat.as_ptr(), strokes.as_ptr());
+
+            let dir = std::env::temp_dir().join(format!(
+                "akapen-ffi-naming-{}-{}",
+                std::process::id(),
+                "custom"
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            let cdir = CString::new(dir.to_str().unwrap()).unwrap();
+            let cstem = CString::new("f001").unwrap();
+            assert_eq!(akapen_export_to_dir(e, cdir.as_ptr(), cstem.as_ptr()), 0);
+            assert!(dir.join("f001.akapen.png").exists());
+            assert!(dir.join("f001.ink.png").exists());
+            assert!(dir.join("f001.ink.json").exists());
+            let _ = std::fs::remove_dir_all(&dir);
+
+            akapen_free(e);
+        }
+    }
+
+    #[test]
+    fn set_output_naming_null_resets_to_default_and_default_preserves_layout() {
+        // A null / empty / separator-bearing suffix falls back to the default
+        // for that field, so an unset engine (never had the setter called)
+        // still writes the pre-§4.7 `review.png` / `strokes.png` layout.
+        let e = akapen_new(16, 16);
+        assert!(!e.is_null());
+        unsafe {
+            // Start with a valid custom pair, then reset via NULL.
+            let flat = CString::new("akapen").unwrap();
+            let strokes = CString::new("ink").unwrap();
+            akapen_set_output_naming(e, flat.as_ptr(), strokes.as_ptr());
+            akapen_set_output_naming(e, std::ptr::null(), std::ptr::null());
+
+            let dir = std::env::temp_dir().join(format!(
+                "akapen-ffi-naming-{}-{}",
+                std::process::id(),
+                "default"
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            let cdir = CString::new(dir.to_str().unwrap()).unwrap();
+            let cstem = CString::new("f002").unwrap();
+            assert_eq!(akapen_export_to_dir(e, cdir.as_ptr(), cstem.as_ptr()), 0);
+            assert!(dir.join("f002.review.png").exists());
+            assert!(dir.join("f002.strokes.png").exists());
+            let _ = std::fs::remove_dir_all(&dir);
+
+            akapen_free(e);
+        }
+    }
+
+    #[test]
+    fn set_output_naming_rejects_separators_and_empty() {
+        // Path separators, dots, empty, and whitespace-only inputs must not
+        // land on disk — they fall back to the default for that field.
+        assert_eq!(sanitize_suffix(std::ptr::null()), None);
+        let bad_empty = CString::new("").unwrap();
+        assert_eq!(sanitize_suffix(bad_empty.as_ptr()), None);
+        let bad_ws = CString::new("   ").unwrap();
+        assert_eq!(sanitize_suffix(bad_ws.as_ptr()), None);
+        let bad_slash = CString::new("a/b").unwrap();
+        assert_eq!(sanitize_suffix(bad_slash.as_ptr()), None);
+        let bad_backslash = CString::new("a\\b").unwrap();
+        assert_eq!(sanitize_suffix(bad_backslash.as_ptr()), None);
+        let bad_dot = CString::new("a.b").unwrap();
+        assert_eq!(sanitize_suffix(bad_dot.as_ptr()), None);
+        // A trimmed, separator-free value is kept verbatim.
+        let good = CString::new("  proof  ").unwrap();
+        assert_eq!(sanitize_suffix(good.as_ptr()).as_deref(), Some("proof"));
+    }
+
+    #[test]
+    fn set_output_naming_null_one_side_resets_only_that_field() {
+        // Setting (custom, custom) and then passing NULL for only *one* side
+        // must reset just that field to the default while leaving the other
+        // side's custom value untouched — a prior regression could plausibly
+        // reset both fields whenever either argument was NULL. Reads
+        // `naming` directly (private field, visible to this `mod tests`
+        // descendant of the defining module) rather than round-tripping
+        // through a filesystem export, since the setter's job is purely to
+        // update engine state.
+        let e = akapen_new(16, 16);
+        assert!(!e.is_null());
+        unsafe {
+            let flat = CString::new("akapen").unwrap();
+            let strokes = CString::new("ink").unwrap();
+            akapen_set_output_naming(e, flat.as_ptr(), strokes.as_ptr());
+
+            // Reset only the flat suffix; the strokes suffix must survive.
+            akapen_set_output_naming(e, std::ptr::null(), strokes.as_ptr());
+            let default = OutputNaming::default();
+            assert_eq!((*e).naming.flat_suffix, default.flat_suffix);
+            assert_eq!((*e).naming.strokes_suffix, "ink");
+
+            akapen_free(e);
+        }
+    }
+
+    #[test]
+    fn set_output_naming_invalid_input_falls_back_to_default_via_public_setter() {
+        // `set_output_naming_rejects_separators_and_empty` (above) only
+        // proves the private `sanitize_suffix` helper rejects bad input; it
+        // doesn't prove the *public* `akapen_set_output_naming` setter that
+        // consumers actually call wires that rejection through to engine
+        // state. Exercise the public setter directly with both an
+        // empty-string pair and a separator/dot-bearing pair.
+        let e = akapen_new(16, 16);
+        assert!(!e.is_null());
+        unsafe {
+            let default = OutputNaming::default();
+
+            let empty = CString::new("").unwrap();
+            akapen_set_output_naming(e, empty.as_ptr(), empty.as_ptr());
+            assert_eq!((*e).naming.flat_suffix, default.flat_suffix);
+            assert_eq!((*e).naming.strokes_suffix, default.strokes_suffix);
+
+            // Prime with a valid custom pair first, so falling back to
+            // default (rather than merely "not changing") is actually
+            // exercised on the next call.
+            let good = CString::new("akapen").unwrap();
+            akapen_set_output_naming(e, good.as_ptr(), good.as_ptr());
+            let bad_slash = CString::new("foo/bar").unwrap();
+            let bad_dot = CString::new("abc.def").unwrap();
+            akapen_set_output_naming(e, bad_slash.as_ptr(), bad_dot.as_ptr());
+            assert_eq!((*e).naming.flat_suffix, default.flat_suffix);
+            assert_eq!((*e).naming.strokes_suffix, default.strokes_suffix);
+
+            akapen_free(e);
         }
     }
 

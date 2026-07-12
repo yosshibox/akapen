@@ -94,6 +94,40 @@ do {
     exit(2)
 }
 
+// ── §4.7: 出力先接尾辞のカスタマイズ ──
+// 追加の 3 点セットを別サフィックスで出し、ファイル名にちゃんと反映されるかを
+// Swift↔Rust の境界越しに一度だけ確認する。GUI の Settings は headless では
+// 触れないので、ここで最小限の境界チェックを兼ねる。
+engine.setOutputNaming(flatSuffix: "akapen", strokesSuffix: "ink")
+do {
+    try engine.export(toDir: outDir, stem: "harness-custom")
+} catch {
+    FileHandle.standardError.write(Data("custom-naming export failed: \(error)\n".utf8))
+    exit(6)
+}
+let customFlat = outDir + "/harness-custom.akapen.png"
+let customStrokesPng = outDir + "/harness-custom.ink.png"
+let customStrokesJSON = outDir + "/harness-custom.ink.json"
+for p in [customFlat, customStrokesPng, customStrokesJSON] where !FileManager.default.fileExists(atPath: p) {
+    FileHandle.standardError.write(Data("custom-naming export missing: \(p)\n".utf8))
+    exit(7)
+}
+print("custom naming: 3-file set with (akapen/ink) suffixes OK")
+// Reset back to the default suffix pair by passing nil, and make sure the
+// pre-§4.7 layout (`review` / `strokes`) is restored.
+engine.setOutputNaming(flatSuffix: nil, strokesSuffix: nil)
+do {
+    try engine.export(toDir: outDir, stem: "harness-reset")
+} catch {
+    FileHandle.standardError.write(Data("reset export failed: \(error)\n".utf8))
+    exit(8)
+}
+if !FileManager.default.fileExists(atPath: outDir + "/harness-reset.review.png") {
+    FileHandle.standardError.write(Data("reset export missing default suffix\n".utf8))
+    exit(9)
+}
+print("custom naming: nil reset restored default suffixes OK")
+
 // Verify no touch stroke leaked into the export (spec §5.2 / acceptance #5).
 let strokesJSON = outDir + "/harness.strokes.json"
 if let data = FileManager.default.contents(atPath: strokesJSON),

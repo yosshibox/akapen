@@ -21,6 +21,12 @@ struct AkapenApp: App {
                     .keyboardShortcut("o", modifiers: .command)
             }
         }
+
+        // §4.7: 設定ウィンドウ。macOS 標準の Cmd+, で開く。
+        // 出力先モード・サブフォルダ名 / 固定パス・命名接尾辞のみを扱う。
+        Settings {
+            SettingsView()
+        }
     }
 
     private func openPanel() {
