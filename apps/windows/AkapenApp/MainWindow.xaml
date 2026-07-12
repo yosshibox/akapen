@@ -1,13 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Akapen main window (spec §7.4-4 / §9 M2 / M2-D — WinUI 3 shell).
+  Akapen main window (spec §7.4-4 / §9 M2 / M2-D / M2-F — WinUI 3 shell).
 
   Layout expanded from M2-A (Open/Save + SwapChainPanel + StatusBar) to add the
   M2-D tool/color/size + undo/redo UI that mirrors the mac shell's SidePanelView
-  (apps/mac/Sources/AkapenApp/SidePanelView.swift + ContentView.swift):
+  (apps/mac/Sources/AkapenApp/SidePanelView.swift + ContentView.swift), then
+  M2-F's Prev/Next frame-stepping buttons:
 
     ┌───────────────────────────────────────────────────────────────┐
-    │ [Open] [Save] | [Pen] [Eraser] | [Undo] [Redo]               │  Toolbar (Grid.Row 0)
+    │ [Open] [Save] | [Pen] [Eraser] | [Undo] [Redo] | [◀Prev][Next▶]│ Toolbar (Grid.Row 0)
     ├──────────────────────────────────────────────┬────────────────┤
     │                                              │ サイズ  10 px │
     │                                              │ [────●──]     │
@@ -45,6 +46,21 @@
       `KeyboardAccelerators.Add(...)` するため:VirtualKey enum に `Oem4`/
       `Oem6` (=`[`/`]`) の名前が無く、XAML の `Key="…"` 属性で書けないので
       整数キャストで登録している(RegisterGlobalAccelerators を参照)。
+
+  Design notes on M2-F scope:
+    - Prev/Next: same shape as Undo/Redo — a Button per direction, plain
+      `Click` handler, plus a `PageUp`/`PageDown` `KeyboardAccelerator` whose
+      `Invoked` only guards focus (`OnStepAcceleratorInvoked`, same pattern
+      as `OnUndoRedoAcceleratorInvoked`) and otherwise lets the accelerator's
+      default auto-Click fire. Enable/disable state
+      (`MainWindow.xaml.cs::UpdateStepButtonsEnabled`) reflects whether the
+      current image sits strictly inside its natural-sorted sibling sequence
+      (spec §4.5): first frame disables Prev, last disables Next, a lone
+      file with no siblings disables both.
+    - Stepping auto-saves any unsaved strokes first (no confirmation dialog,
+      spec §4.5) and aborts the step — keeping the current frame — if that
+      save fails, matching the mac shell's AppState.step(forward:) data-loss
+      guard. The same guard runs before Open… replaces the image.
 
   非回帰:
     - Ctrl+S / SaveButton, SwapChainPanel 一式, palm gate, pressure warning
@@ -129,6 +145,36 @@
                     <!-- Same guard as UndoButton's Ctrl+Z above. -->
                     <KeyboardAccelerator Modifiers="Control" Key="Y" Invoked="OnUndoRedoAcceleratorInvoked"/>
                     <KeyboardAccelerator Modifiers="Control,Shift" Key="Z" Invoked="OnUndoRedoAcceleratorInvoked"/>
+                </Button.KeyboardAccelerators>
+            </Button>
+
+            <AppBarSeparator/>
+
+            <!-- M2-F: 連番次前 (spec §4.5 / §3 主要ナビ行). Gated in code-behind
+                 (UpdateStepButtonsEnabled) on an engine being loaded and the
+                 current image sitting strictly between the sequence's first
+                 and last entries — first frame disables Prev, last frame
+                 disables Next. PageUp/PageDown carry the same
+                 IsTextInputFocused guard as Ctrl+Z/Y/Shift+Z above
+                 (OnStepAcceleratorInvoked). -->
+            <Button x:Name="PrevButton"
+                    Content="◀ Prev"
+                    Click="OnPrevClick"
+                    IsEnabled="False"
+                    ToolTipService.ToolTip="Previous frame (Page Up)"
+                    AutomationProperties.Name="Previous frame">
+                <Button.KeyboardAccelerators>
+                    <KeyboardAccelerator Key="PageUp" Invoked="OnStepAcceleratorInvoked"/>
+                </Button.KeyboardAccelerators>
+            </Button>
+            <Button x:Name="NextButton"
+                    Content="Next ▶"
+                    Click="OnNextClick"
+                    IsEnabled="False"
+                    ToolTipService.ToolTip="Next frame (Page Down)"
+                    AutomationProperties.Name="Next frame">
+                <Button.KeyboardAccelerators>
+                    <KeyboardAccelerator Key="PageDown" Invoked="OnStepAcceleratorInvoked"/>
                 </Button.KeyboardAccelerators>
             </Button>
         </StackPanel>

@@ -1,6 +1,7 @@
 // Akapen main window (spec §7.4-4 / §9 M2 — WinUI 3 shell; M2-A first-cut
 // scaffold, M2-B1 real pointer kind/pressure + palm rejection, M2-D tool /
-// color / size / undo-redo UI).
+// color / size / undo-redo UI, M2-F next/prev frame navigation + save-
+// failure data-loss guard).
 //
 // Responsibilities kept in this file (mirrors apps/mac/Sources/AkapenApp/
 // AppState.swift + SidePanelView.swift, folded into the window itself since
@@ -18,6 +19,19 @@
 //     wraps). Wintab (the "Windows Ink off" fallback pen path, spec §5.1
 //     second route) is M2-B2.
 //   - Drive Open… (FileOpenPicker) and Save / Ctrl+S (akapen_export_to_dir).
+//   - M2-F: step to the previous/next supported-image sibling in the current
+//     folder (any of .png/.jpg/.jpeg/.webp/.bmp, matching mac's
+//     supportedExts — same-extension token target takes priority via
+//     SequenceStepper, natural-sort adjacency is the fallback). Prev/Next
+//     toolbar buttons, PageUp/PageDown
+//     accelerators — spec §4.5 連番次前, §3 主要ナビ行), auto-saving any
+//     unsaved strokes before the step and aborting the step (keeping the
+//     current frame) if that save fails — the same data-loss guard the mac
+//     shell's AppState.step(forward:) applies before AppState.open(url:).
+//     The same guard runs before Open… replaces the current image, and a
+//     best-effort (non-blocking) save is attempted on window close, mirroring
+//     apps/windows-probe's WM_CLOSE handling (Program.cs's `s_dirty` /
+//     `TrySave("on-close")": save but never block exit on failure).
 //   - Present one frame per DispatcherTimer tick via akapen_render_frame.
 //   - M2-D: hold the current tool (Pen/Eraser) / color (10-swatch MS Paint
 //     palette from PaletteColors.cs) / brush size, expose them via toolbar
@@ -50,7 +64,6 @@
 //     OnPresentTick renders (panel DIP size <-> image pixel size), which
 //     holds across ordinary window resizes since both sides read the
 //     panel's live ActualWidth/Height; it does not attempt zoom/pan yet.
-//   - Frame stepping across sibling images.
 //
 // The engine handle is stored as IntPtr (mirrors apps/windows-probe's
 // choice) rather than a raw AkapenEngine* field — C# raw-pointer fields on
@@ -103,6 +116,29 @@ public sealed partial class MainWindow : Window
 
     // Cached current file path for status text + save stem.
     private string? _currentPath;
+
+    // Supported-image files in _currentPath's folder (any of
+    // SupportedFrameExtensions = .png/.jpg/.jpeg/.webp/.bmp, mixed together —
+    // matching mac's AppState.supportedExts), natural-sorted
+    // (NaturalStringComparer), including _currentPath itself — the
+    // frame-stepping sequence for Prev/Next (spec §4.5). SequenceStepper
+    // then prefers the same-extension token neighbor and falls back to
+    // natural-sort adjacency. Rebuilt on every successful LoadImage
+    // (Open… and Prev/Next alike) since the folder's contents can have
+    // changed since the last build. Empty while no image is loaded.
+    private readonly List<string> _siblings = new();
+
+    // Whether the current frame has drawing input that is not yet reflected
+    // in a `_review/` export. Set the moment a sample reaches akapen_pointer
+    // in PushPointerSample — any phase, any device kind (unlike the mac
+    // shell's AppState.pointer, which only flips this on a completed stroke's
+    // `.up`; setting it a beat earlier here is deliberately conservative for
+    // the data-loss guard: marking dirty too early costs an extra harmless
+    // auto-save, marking it too late risks losing a stroke). Cleared on a
+    // successful TrySave() and on FreeEngine. Drives both the
+    // auto-save-before-navigation guard (StepFrame / OnOpenClick / window
+    // close) and the window-title dirty marker (UpdateDirtyIndicator).
+    private bool _hasUnsavedStrokes;
 
     // Image pixel size of the currently loaded engine (from akapen_size at
     // Open time). Needed to invert the render surface's centered placement
@@ -553,6 +589,13 @@ public sealed partial class MainWindow : Window
                 phase);
         }
 
+        // M2-F data-loss guard (spec §4.5): the current frame now has
+        // drawing input that isn't in a `_review/` export yet. See the
+        // _hasUnsavedStrokes field doc for why this fires on every phase
+        // rather than gating to Up like the mac shell.
+        _hasUnsavedStrokes = true;
+        UpdateDirtyIndicator();
+
         if (phase == 2 /*Up*/)
         {
             // Spec §5.4: surface (never silently swallow) a driver/tablet
@@ -608,17 +651,31 @@ public sealed partial class MainWindow : Window
         }
         if (file == null) return;
 
+        // M2-F data-loss guard (spec §4.5): auto-save the current frame's
+        // unsaved strokes before swapping in the new image. Unlike
+        // StepFrame, a failed save here does not just skip the transition
+        // silently — TrySave() already left a failure reason in StatusText,
+        // so append a short note clarifying that Open… itself was aborted
+        // and the previous image is still the one on screen.
+        if (_hasUnsavedStrokes && !TrySave())
+        {
+            SetStatus(StatusText.Text + " Kept the current image open.");
+            return;
+        }
+
         LoadImage(file.Path);
     }
 
     private void LoadImage(string path)
     {
-        // First: detach and free any previous engine so we don't leak the
-        // wgpu surface's handle-lifetime chain (see the render-detach doc in
-        // akapen.h).
-        DetachSurface();
-        FreeEngine();
-
+        // Open the new image FIRST, before touching the previous engine
+        // (Codex Ch.10 review, Low1). The old ordering detached/freed the
+        // previous engine up front, so a deleted/corrupt sibling (or any
+        // akapen_open_image failure) left the shell with no engine at all —
+        // "saved fine, but the current frame just vanished". Mirrors the mac
+        // shell's `open(url:)` (AppState.swift), which only reassigns its
+        // `engine` property after `AkapenEngine(imagePath:)` succeeds, so a
+        // failed open never costs the still-good current frame.
         IntPtr engine;
         uint w = 0, h = 0;
         unsafe
@@ -631,17 +688,27 @@ public sealed partial class MainWindow : Window
             }
             if (raw == null)
             {
-                SetStatus($"Could not open {Path.GetFileName(path)}.");
+                SetStatus($"Could not open {Path.GetFileName(path)} — keeping current frame.");
                 return;
             }
             engine = (IntPtr)raw;
             NativeMethods.akapen_size(raw, &w, &h);
         }
 
+        // New engine is up: only now is it safe to detach/free the previous
+        // one (still referenced by _engine at this point) so we don't leak
+        // the wgpu surface's handle-lifetime chain (see the render-detach doc
+        // in akapen.h).
+        DetachSurface();
+        FreeEngine();
+
         _engine = engine;
         _currentPath = path;
         _imgWidth = w;
         _imgHeight = h;
+        // Fresh image, fresh read: no unsaved strokes yet (mirrors
+        // AppState.open resetting `hasUnsavedStrokes = false` on mac).
+        _hasUnsavedStrokes = false;
 
         // Push the shell-held tool / color / size (M2-D deferred-apply pattern
         // — mirrors AppState.applyToolState on mac, called right after
@@ -662,6 +729,136 @@ public sealed partial class MainWindow : Window
         // image shouldn't linger (mirrors AppState.open resetting
         // `pressureWarning = false` on mac).
         SetPressureWarning(false);
+
+        // M2-F: rebuild the sibling sequence for this folder (spec §4.5) and
+        // gate the Prev/Next buttons on the result — done last so it reflects
+        // the just-loaded _currentPath.
+        BuildSiblings(path);
+        UpdateDirtyIndicator();
+    }
+
+    // ── M2-F: sibling detection + Prev/Next frame stepping ─────────────────
+
+    // The frame-sequence's supported extensions (spec §4.5). Codex Ch.10
+    // review (Low2): this shell's earlier BuildSiblings doc claimed jpg/jpeg
+    // must not mix into the same sequence, but §4.5 only asks for the
+    // supported images to be natural-sorted — it says nothing about keeping
+    // extensions apart. The mac shell already mixes all five
+    // (AppState.swift's `supportedExts`); matching that set here keeps both
+    // shells' Prev/Next behavior identical instead of Windows silently
+    // skipping, say, a `.jpg` sitting next to a folder full of `.png`s.
+    private static readonly HashSet<string> SupportedFrameExtensions =
+        new(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".webp", ".bmp" };
+
+    /// <summary>
+    /// Rescans <paramref name="path"/>'s parent folder for files whose
+    /// extension is one of <see cref="SupportedFrameExtensions"/>
+    /// (case-insensitive; jpg and jpeg mix into the same sequence — see that
+    /// field's doc), natural-sorts them, and stores the result in
+    /// <see cref="_siblings"/> (which always includes <paramref name="path"/>
+    /// itself). Called from <see cref="LoadImage"/> on every successful
+    /// Open… and Prev/Next step, since the folder's contents can change
+    /// between one open and the next. Leaves <see cref="_siblings"/> empty
+    /// (Prev/Next both disabled) if the folder can't be listed.
+    /// </summary>
+    private void BuildSiblings(string path)
+    {
+        _siblings.Clear();
+        string? dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir))
+        {
+            try
+            {
+                foreach (string candidate in Directory.GetFiles(dir))
+                {
+                    if (SupportedFrameExtensions.Contains(Path.GetExtension(candidate)))
+                    {
+                        _siblings.Add(candidate);
+                    }
+                }
+                _siblings.Sort(NaturalStringComparer.Instance);
+            }
+            catch (IOException)
+            {
+                _siblings.Clear();
+            }
+            catch (UnauthorizedAccessException)
+            {
+                _siblings.Clear();
+            }
+        }
+        UpdateStepButtonsEnabled();
+    }
+
+    /// <summary>
+    /// Gates PrevButton/NextButton on whether an engine is loaded and
+    /// <see cref="_currentPath"/> sits strictly between the first and last
+    /// entries of <see cref="_siblings"/> (spec: first frame disables Prev,
+    /// last frame disables Next; a lone file with no siblings disables both).
+    /// </summary>
+    private void UpdateStepButtonsEnabled()
+    {
+        bool hasEngine = _engine != IntPtr.Zero;
+        int idx = _currentPath is not null ? _siblings.IndexOf(_currentPath) : -1;
+        bool hasSiblings = idx >= 0 && _siblings.Count > 1;
+        PrevButton.IsEnabled = hasEngine && hasSiblings && idx > 0;
+        NextButton.IsEnabled = hasEngine && hasSiblings && idx < _siblings.Count - 1;
+    }
+
+    private void OnPrevClick(object sender, RoutedEventArgs e) => StepFrame(forward: false);
+
+    private void OnNextClick(object sender, RoutedEventArgs e) => StepFrame(forward: true);
+
+    /// <summary>
+    /// Shared Invoked handler for the PageUp/PageDown KeyboardAccelerators on
+    /// PrevButton/NextButton in MainWindow.xaml — same shape as
+    /// OnUndoRedoAcceleratorInvoked: it only ever guards against a future
+    /// text-input control (see IsTextInputFocused's doc) and otherwise leaves
+    /// Handled at its default false, letting the button's own Invoke control
+    /// pattern auto-fire Click (OnPrevClick/OnNextClick) as usual.
+    /// </summary>
+    private void OnStepAcceleratorInvoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (IsTextInputFocused())
+        {
+            args.Handled = true;
+        }
+    }
+
+    /// <summary>
+    /// Steps to the previous/next entry in <see cref="_siblings"/> (spec
+    /// §4.5 連番次前) — preferring the sequence-token target (trailing digit
+    /// run ± 1, zero-padding preserved) over plain natural-sort adjacency,
+    /// via <see cref="SequenceStepper.Neighbor"/> (Codex Ch.10 review,
+    /// Medium2; see that file's doc for why this isn't reached through FFI).
+    /// If the current frame has unsaved strokes, auto-saves it first (no
+    /// confirmation dialog, per §4.5) — and if that save fails, aborts the
+    /// step entirely so the current frame is kept exactly as the data-loss
+    /// guard requires (TrySave already left the failure reason in
+    /// StatusText). Mirrors AppState.step(forward:) on mac, modulo the
+    /// token-vs-adjacency preference mac doesn't implement either.
+    /// </summary>
+    private void StepFrame(bool forward)
+    {
+        if (_engine == IntPtr.Zero || _currentPath is null) return;
+        // Unchanged pre-check: silently no-op (as before) if the current
+        // path has fallen out of _siblings since the last rebuild, rather
+        // than surfacing a misleading "already at the first/last frame".
+        if (_siblings.IndexOf(_currentPath) < 0) return;
+
+        string? target = SequenceStepper.Neighbor(_currentPath, _siblings, forward);
+        if (target is null)
+        {
+            SetStatus(forward ? "Already at the last frame." : "Already at the first frame.");
+            return;
+        }
+
+        if (_hasUnsavedStrokes && !TrySave())
+        {
+            return; // TrySave already set the failure status; frame not changed.
+        }
+
+        LoadImage(target);
     }
 
     // ── GPU surface attach / detach ────────────────────────────────────────
@@ -749,21 +946,40 @@ public sealed partial class MainWindow : Window
         SaveButton.IsEnabled = false;
         UndoButton.IsEnabled = false;
         RedoButton.IsEnabled = false;
+        // M2-F: no engine, no frame sequence, nothing unsaved.
+        _hasUnsavedStrokes = false;
+        _siblings.Clear();
+        PrevButton.IsEnabled = false;
+        NextButton.IsEnabled = false;
+        UpdateDirtyIndicator();
     }
 
-    // ── Save (Ctrl+S / Save button) ────────────────────────────────────────
+    // ── Save (Ctrl+S / Save button) ─────────────────────────────────────────
 
     private void OnSaveClick(object sender, RoutedEventArgs e)
     {
-        SaveCurrent();
+        TrySave();
     }
 
-    private void SaveCurrent()
+    /// <summary>
+    /// Writes the 3-file `_review/` export for the current frame (spec §4.3)
+    /// and, on success, clears <see cref="_hasUnsavedStrokes"/>. Shared by
+    /// the Save button/Ctrl+S, the Prev/Next auto-save-before-step guard
+    /// (<see cref="StepFrame"/>), the Open… data-loss guard
+    /// (<see cref="OnOpenClick"/>), and the best-effort save on window close
+    /// (<see cref="OnWindowClosed"/>) — one save path, one status-text
+    /// wording, one failure-code mapping (<see cref="DescribeExportRc"/>) for
+    /// all four callers, mirroring how mac's AppState.save() is the single
+    /// path AppState.step(forward:) also calls through.
+    /// </summary>
+    /// <returns>True on success; false if there was nothing to save or the
+    /// export failed (StatusText already carries the reason either way).</returns>
+    private bool TrySave()
     {
         if (_currentPath is null || _engine == IntPtr.Zero)
         {
             SetStatus("Nothing to save yet.");
-            return;
+            return false;
         }
 
         // Mirrors the mac shell's default output dir: `<input's folder>/_review/`
@@ -787,11 +1003,13 @@ public sealed partial class MainWindow : Window
         if (rc == 0)
         {
             SetStatus($"Saved review for {Path.GetFileName(_currentPath)} → {dir}");
+            _hasUnsavedStrokes = false;
+            UpdateDirtyIndicator();
+            return true;
         }
-        else
-        {
-            SetStatus($"Save failed ({DescribeExportRc(rc)}). Frame not changed.");
-        }
+
+        SetStatus($"Save failed ({DescribeExportRc(rc)}). Frame not changed.");
+        return false;
     }
 
     private static string DescribeExportRc(int rc) => rc switch
@@ -811,6 +1029,16 @@ public sealed partial class MainWindow : Window
 
     private void OnWindowClosed(object sender, WindowEventArgs args)
     {
+        // M2-F data-loss guard: best-effort save of any unsaved strokes
+        // before teardown. Unlike StepFrame/OnOpenClick, a failure here does
+        // not block anything — the window is going away either way, mirroring
+        // apps/windows-probe's WM_CLOSE handling ("save but never block exit
+        // on failure"; see the class doc's Program.cs reference). Must run
+        // before DetachSurface/FreeEngine, which invalidate _engine.
+        if (_hasUnsavedStrokes)
+        {
+            TrySave();
+        }
         DetachSurface();
         FreeEngine();
         SwapChainPanelNativeInterop.Release(_panelNativePtr);
@@ -828,6 +1056,23 @@ public sealed partial class MainWindow : Window
     private void SetPressureWarning(bool warned)
     {
         PressureWarningText.Visibility = warned ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// M2-F dirty marker (spec: kept modest, matching how lightly the mac
+    /// shell surfaces this — see its AppState.hasUnsavedStrokes doc, which
+    /// has no dedicated UI marker at all). Puts a trailing "•" on the window
+    /// title while <see cref="_hasUnsavedStrokes"/> is true, instead of
+    /// touching StatusText (which OnSaveClick/StepFrame/OnOpenClick already
+    /// use for open/save/failure messages — overloading it here would make
+    /// those messages flicker on every completed stroke).
+    /// </summary>
+    private void UpdateDirtyIndicator()
+    {
+        string baseTitle = _currentPath is not null
+            ? $"Akapen — {Path.GetFileName(_currentPath)}"
+            : "Akapen";
+        Title = _hasUnsavedStrokes ? baseTitle + " •" : baseTitle;
     }
 
     // ── M2-D: tool / color / size UI + undo/redo + shortcuts ───────────────
@@ -985,12 +1230,22 @@ public sealed partial class MainWindow : Window
     {
         if (_engine == IntPtr.Zero) return;
         unsafe { NativeMethods.akapen_undo((AkapenEngine*)_engine); }
+        // Codex Ch.10 review (Medium1): undo/redo changes the composited
+        // frame just as much as a drawn stroke does, so it must arm the same
+        // data-loss guard PushPointerSample does — otherwise "draw → save →
+        // undo/redo → Next/Open/close" silently drops the post-undo/redo
+        // state because _hasUnsavedStrokes never got set back to true.
+        _hasUnsavedStrokes = true;
+        UpdateDirtyIndicator();
     }
 
     private void OnRedoClick(object sender, RoutedEventArgs e)
     {
         if (_engine == IntPtr.Zero) return;
         unsafe { NativeMethods.akapen_redo((AkapenEngine*)_engine); }
+        // See OnUndoClick's comment — same guard, same reason.
+        _hasUnsavedStrokes = true;
+        UpdateDirtyIndicator();
     }
 
     /// <summary>

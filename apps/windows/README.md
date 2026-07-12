@@ -137,6 +137,55 @@ This project (`apps/windows`), by contrast, is the real M2 shell:
   spec §3 table (routed through `akapen_resolve_key` so both shells share
   one map) is M3.
 
+## In scope this chapter (M2-F)
+
+- **Prev/Next frame stepping** (spec §4.5 連番次前, §3 主要ナビ行):
+  `PrevButton`/`NextButton` on the toolbar (`◀ Prev` / `Next ▶`), each with a
+  `PageUp`/`PageDown` `KeyboardAccelerator` guarded by the same
+  `IsTextInputFocused` check as the M2-D accelerators
+  (`OnStepAcceleratorInvoked`, same shape as `OnUndoRedoAcceleratorInvoked`).
+- **Sibling detection**: `MainWindow.xaml.cs::BuildSiblings` rescans the
+  current image's folder for **any supported image file** (case-insensitive
+  match against `SupportedFrameExtensions` = `.png`/`.jpg`/`.jpeg`/`.webp`/
+  `.bmp`, mixed together — same set as mac's `AppState.supportedExts`) and
+  natural-sorts them (`frame_2.png` before `frame_10.png`) via
+  `NaturalStringComparer.cs`, a P/Invoke wrapper around Shlwapi's
+  `StrCmpLogicalW` — the same routine Explorer itself uses to order a
+  folder listing. From that combined list, `SequenceStepper` still prefers
+  the same-extension token neighbor (spec §4.5 の末尾連番トークン優先),
+  falling back to natural-sort adjacency; the mixing only widens the pool
+  the fallback can traverse. Rebuilt on every `LoadImage` (Open… and Prev/
+  Next alike), since the folder's contents can change between one open and
+  the next.
+  `PrevButton`/`NextButton.IsEnabled` (`UpdateStepButtonsEnabled`) reflect
+  whether the current image sits strictly inside that sequence: first frame
+  disables Prev, last disables Next, a lone file with no siblings disables
+  both.
+- **Data-loss guard** (spec §4.5 "確認ダイアログではなく自動保存"): a new
+  `_hasUnsavedStrokes` field flips true the moment a drawing sample reaches
+  `akapen_pointer` in `PushPointerSample` and clears on a successful save.
+  `StepFrame` auto-saves before switching frames and **aborts the step,
+  keeping the current frame,** if that save fails — mirroring the mac
+  shell's `AppState.step(forward:)` guard ahead of `AppState.open(url:)`.
+  `OnOpenClick` runs the same guard before Open… replaces the image (on
+  failure the picked file is not opened; the previous image stays up).
+  `OnWindowClosed` attempts a best-effort save on close but, unlike the two
+  above, never blocks the close on failure — mirroring
+  `apps/windows-probe`'s `WM_CLOSE` handling (`Program.cs`'s `s_dirty` /
+  `TrySave("on-close")`).
+- **Shared save path**: the Save button/Ctrl+S, the Prev/Next step guard, the
+  Open… guard, and the close-time best-effort save all go through one
+  `TrySave()` method, so the `DescribeExportRc` failure-code mapping (rc 1-4
+  + unknown) and the status-text wording are identical everywhere a save can
+  fail — no separate "auto-save" message shape to keep in sync.
+- **Dirty marker**: a trailing `•` on the window title while
+  `_hasUnsavedStrokes` is true (`UpdateDirtyIndicator`), left deliberately
+  modest — the mac shell has no dedicated dirty-marker UI either.
+- Output directory / naming stay fixed at `<input's folder>/_review/` with
+  the engine's default suffixes; configurable output dir mode + suffixes
+  (spec §4.7) remains **M2-E** scope (unaddressed by this chapter — see
+  below).
+
 ## Not yet in scope (future M2 / M3 chapters)
 
 - **M2-B2**: Wintab (WACOM's native API), the second pen path for drivers
@@ -259,6 +308,7 @@ AkapenApp/
 ├─ App.xaml + .cs                  # WinUI Application entry, creates MainWindow
 ├─ MainWindow.xaml + .cs           # Toolbar + SwapChainPanel + SidePanel + status bar
 ├─ PaletteColors.cs                # MS Paint 10色パレット定義(1箇所集約)
+├─ NaturalStringComparer.cs        # StrCmpLogicalW-backed natural sort (M2-F sibling sequence)
 ├─ Interop/
 │  └─ SwapChainPanelNativeInterop.cs  # ISwapChainPanelNative QueryInterface
 └─ app.manifest                    # PerMonitorV2 DPI + Windows 10+ compat
