@@ -118,6 +118,46 @@ int32_t akapen_resolve_key(uint32_t ch, int32_t physical,
                            int composing, int text_editing);
 
 /* ──────────────────────────────────────────────────────────────────────────
+ * Palm rejection (spec §5.2).
+ *
+ * akapen_palm_route is a pure, engine-independent state machine (the same shape
+ * as akapen_resolve_key, but carrying a tiny caller-owned state so the
+ * pen-priority lock spans calls). The shell classifies each raw event as
+ * Pen/Touch/Mouse and asks where it should go; touches during pen contact or
+ * within the lock are rejected as palm. One judgment shared by every platform.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/* Routing codes returned by akapen_palm_route. */
+enum {
+    AKAPEN_ROUTE_DRAW = 0,     /* feed the drawing engine (pen / mouse)        */
+    AKAPEN_ROUTE_NAVIGATE = 1, /* canvas pan/pinch, not drawing (touch, no pen)*/
+    AKAPEN_ROUTE_IGNORE = 2    /* drop: palm during pen contact / pen lock     */
+};
+
+/*
+ * Caller-owned palm-rejection state, persisted between akapen_palm_route calls
+ * (hold one per canvas). Zero-initialize (pen_down = 0, lock_active = 0) for
+ * "no pen seen yet"; akapen_palm_route reads and updates it in place.
+ */
+typedef struct AkapenPalmState {
+    int32_t pen_down;      /* non-zero while a pen is in contact              */
+    int32_t lock_active;   /* non-zero while the post-pen lock is armed       */
+    int64_t lock_until_ms; /* lock expiry (ms); valid iff lock_active         */
+} AkapenPalmState;
+
+/*
+ * Routes one classified pointer event through the core palm state machine,
+ * updating *state in place. Pure apart from that state (time is the injected
+ * now_ms, monotonic milliseconds).
+ *   kind    0=Pen, 1=Touch, 2=Mouse (matches akapen_pointer).
+ *   phase   0=Down, 1=Move, 2=Up.
+ *   now_ms  monotonic timestamp in milliseconds.
+ * Returns an AKAPEN_ROUTE_* code. A NULL state fails closed for touch
+ * (AKAPEN_ROUTE_IGNORE) and open for pen/mouse (AKAPEN_ROUTE_DRAW).
+ */
+int32_t akapen_palm_route(AkapenPalmState *state, int kind, int phase, int64_t now_ms);
+
+/* ──────────────────────────────────────────────────────────────────────────
  * Phase e: GPU surface path (spec §7.4-6 "GPU 描画(wgpu: Metal/D3D12)").
  *
  * Optional and additive: the CPU composite path (akapen_composite_rgba /

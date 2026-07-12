@@ -64,12 +64,22 @@ final class CanvasNSView: NSView {
     // held, a Space drag rotates the canvas instead (spec §3.1).
     private var spaceDown = false
 
+    // Palm rejection (spec §5.2): the core state machine that keeps a resting
+    // hand off the ink path. Every classified pointer event is routed through it
+    // before it can draw; pen down/move/up here arm the pen-priority lock that
+    // later rejects a trailing palm touch.
+    private var palmGate = PalmGate()
+
     override var isFlipped: Bool { true } // top-left origin, matches image space
     override var acceptsFirstResponder: Bool { true }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         window?.acceptsMouseMovedEvents = true
+        // Receive *direct* touches (finger/palm on a touch display) so palm
+        // rejection can classify and reject them (spec §5.2). Indirect
+        // (trackpad) touches are left to the existing magnify/scroll gestures.
+        allowedTouchTypes = [.direct]
         if window == nil {
             teardownGPU()
         } else {
@@ -263,21 +273,59 @@ final class CanvasNSView: NSView {
 
     // MARK: input
 
-    private func pressure(from event: NSEvent) -> (Double, AkapenPointerKind) {
-        // Only tablet-point events carry genuine pen pressure.
+    /// Classifies a mouse-path NSEvent into (pressure, kind). Only tablet-point
+    /// events carry genuine pen pressure; everything else on this path is a
+    /// mouse (a trackpad Force Touch must NOT be taken for a pen — spec §5.4).
+    /// Genuine touches never arrive here; they come through `touchesBegan`… and
+    /// are classified as `.touch` (spec §5.2).
+    private func classify(_ event: NSEvent) -> (Double, AkapenPointerKind) {
         if event.subtype == .tabletPoint {
             return (Double(event.pressure), .pen)
         }
         return (1.0, .mouse)
     }
 
+    /// NSEvent.timestamp is seconds since boot (monotonic); the core palm gate
+    /// wants monotonic milliseconds.
+    private func nowMs(_ event: NSEvent) -> Int64 {
+        Int64(event.timestamp * 1000)
+    }
+
     private func send(_ event: NSEvent, phase: AkapenPhase) {
         guard let state, state.engine != nil else { return }
+        let (p, kind) = classify(event)
+        // Palm rejection (spec §5.2): consult the core gate before drawing. Pen
+        // and mouse always resolve to `.draw`; the pen's down/move/up here is
+        // what arms the pen-priority lock that later rejects a trailing palm
+        // touch (handled in touchesBegan/… below, which never draws).
+        guard palmGate.route(kind: kind, phase: phase, nowMs: nowMs(event)) == .draw else { return }
         let vp = convert(event.locationInWindow, from: nil)
         guard let ip = imagePoint(from: vp) else { return }
-        let (p, kind) = pressure(from: event)
         state.pointer(imageX: Double(ip.x), imageY: Double(ip.y),
                       pressure: p, kind: kind, phase: phase)
+    }
+
+    // MARK: touch input (palm rejection, spec §5.2)
+    //
+    // Direct touches (a finger or resting palm on a touch display) are
+    // classified explicitly as `.touch` and run through the same core gate. In
+    // M1 they never reach the ink path: a palm during pen contact / the pen lock
+    // routes to `.ignore`, and a deliberate touch to `.navigate` (canvas
+    // pan/pinch). Touch-driven pan/pinch and the real liquid-tablet behavior are
+    // deferred to the §5.6 device gate; here we only guarantee touches never
+    // draw and keep the lock state exercised.
+    override func touchesBegan(with event: NSEvent) { gateTouches(event, phase: .down) }
+    override func touchesMoved(with event: NSEvent) { gateTouches(event, phase: .move) }
+    override func touchesEnded(with event: NSEvent) { gateTouches(event, phase: .up) }
+    override func touchesCancelled(with event: NSEvent) { gateTouches(event, phase: .up) }
+
+    private func gateTouches(_ event: NSEvent, phase: AkapenPhase) {
+        // Explicitly classified as touch — deliberately NOT sent to
+        // state.pointer (the drawing path). We still route it so the gate is
+        // exercised and, once touch pan/pinch lands, the pen-priority lock is
+        // already in place. `.navigate` (deliberate touch) will drive canvas
+        // pan/pinch at the device gate; `.ignore` (palm) stays dropped.
+        _ = palmGate.route(kind: .touch, phase: phase, nowMs: nowMs(event))
     }
 
     override func mouseDown(with event: NSEvent) {

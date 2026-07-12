@@ -30,6 +30,40 @@ public enum AkapenPressureCurve: Int32 {
     case hard = 2
 }
 
+/// Where a classified pointer event should go (palm rejection, spec §5.2).
+public enum AkapenRouting: Int32 {
+    /// Feed the drawing engine (pen, or a mouse fallback).
+    case draw = 0
+    /// Use for canvas pan/pinch, not drawing (a deliberate touch, no pen).
+    case navigate = 1
+    /// Drop entirely — a palm touch during pen contact or the pen lock.
+    case ignore = 2
+}
+
+/// Palm-rejection gate (spec §5.2): the small state machine the Rust core owns,
+/// wrapped so the shell can ask each classified pointer event whether it should
+/// reach the drawing path. Engine-independent (no handle) — the same shape as
+/// the core key map. Hold one per canvas; it carries the pen-priority lock.
+public struct PalmGate {
+    private var state = AkapenPalmState(pen_down: 0, lock_active: 0, lock_until_ms: 0)
+
+    public init() {}
+
+    /// Routes one classified pointer event, updating the pen-priority lock.
+    /// `nowMs` is a monotonic timestamp in milliseconds (e.g.
+    /// `Int64(event.timestamp * 1000)`). Touches during pen contact or within
+    /// the lock come back as `.ignore`; a deliberate touch as `.navigate`; pen
+    /// and mouse as `.draw`.
+    public mutating func route(
+        kind: AkapenPointerKind, phase: AkapenPhase, nowMs: Int64
+    ) -> AkapenRouting {
+        let code = withUnsafeMutablePointer(to: &state) {
+            akapen_palm_route($0, kind.rawValue, phase.rawValue, nowMs)
+        }
+        return AkapenRouting(rawValue: code) ?? .draw
+    }
+}
+
 /// Failure kinds from the 3-file export. Each maps to a distinct non-zero
 /// return code of `akapen_export_to_dir` (crates/akapen-ffi/src/lib.rs); the
 /// UI turns these into a human-readable cause (spec §4.5, data-loss guard).

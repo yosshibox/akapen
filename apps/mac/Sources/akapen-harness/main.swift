@@ -61,11 +61,53 @@ print("pressure stuck warning: \(engine.pressureStuck)")
 engine.undo()
 engine.redo()
 
+// ── Palm rejection (spec §5.2) ──
+// Drive the core gate through the Swift↔Rust boundary and assert the routing
+// contract, then confirm a *touch*-kind stroke sent to the engine never adds
+// ink. The real liquid-tablet behavior is a §5.6 device-gate check, deferred.
+func expect(_ got: AkapenRouting, _ want: AkapenRouting, _ what: String) {
+    if got != want {
+        FileHandle.standardError.write(Data("palm gate FAIL: \(what) = \(got), want \(want)\n".utf8))
+        exit(3)
+    }
+}
+var gate = PalmGate()
+expect(gate.route(kind: .touch, phase: .down, nowMs: 0), .navigate, "touch alone → pan")
+expect(gate.route(kind: .pen, phase: .down, nowMs: 10), .draw, "pen down draws")
+expect(gate.route(kind: .touch, phase: .down, nowMs: 11), .ignore, "palm during pen")
+expect(gate.route(kind: .pen, phase: .up, nowMs: 20), .draw, "pen up draws")     // lock → 520
+expect(gate.route(kind: .touch, phase: .down, nowMs: 400), .ignore, "palm in lock")
+expect(gate.route(kind: .touch, phase: .down, nowMs: 520), .navigate, "touch after lock")
+expect(gate.route(kind: .mouse, phase: .down, nowMs: 600), .draw, "mouse always draws")
+print("palm gate: routing contract OK")
+
+// A touch-kind stroke must not add ink (core ignores Touch samples). Send one
+// and confirm the exported stroke count is unchanged (still the 2 pen strokes).
+engine.pointer(x: 100, y: 100, pressure: 1.0, kind: .touch, phase: .down)
+engine.pointer(x: 200, y: 150, pressure: 1.0, kind: .touch, phase: .move)
+engine.pointer(x: 300, y: 100, pressure: 1.0, kind: .touch, phase: .up)
+
 do {
     try engine.export(toDir: outDir, stem: "harness")
 } catch {
     FileHandle.standardError.write(Data("export failed: \(error)\n".utf8))
     exit(2)
+}
+
+// Verify no touch stroke leaked into the export (spec §5.2 / acceptance #5).
+let strokesJSON = outDir + "/harness.strokes.json"
+if let data = FileManager.default.contents(atPath: strokesJSON),
+   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+   let strokes = obj["strokes"] as? [[String: Any]] {
+    if strokes.count != 2 {
+        FileHandle.standardError.write(
+            Data("touch leaked into ink: \(strokes.count) strokes, want 2\n".utf8))
+        exit(4)
+    }
+    print("touch rejection: export has \(strokes.count) strokes (no touch ink) OK")
+} else {
+    FileHandle.standardError.write(Data("could not read \(strokesJSON)\n".utf8))
+    exit(5)
 }
 
 let flat = outDir + "/harness.review.png"

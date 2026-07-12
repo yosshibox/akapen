@@ -21,6 +21,7 @@
 
 use akapen_core::coord::ViewTransform;
 use akapen_core::engine::{BakeDelta, Phase, PointerSample};
+use akapen_core::palm::{PalmState, Routing};
 use akapen_core::stroke::PointerKind;
 use akapen_core::{Engine, PressureCurve, Tool};
 use akapen_io::decode::decode_rgba;
@@ -772,6 +773,109 @@ pub extern "C" fn akapen_resolve_key(
     }
 }
 
+// ── Palm rejection (spec §5.2) ───────────────────────────────────────────
+//
+// A pure, engine-independent bridge to `akapen_core::palm` — the same shape as
+// `akapen_resolve_key`, but carrying a tiny caller-owned state so the
+// pen-priority lock can span calls. The shell classifies each raw event as
+// Pen/Touch/Mouse and asks where it should go; touches during pen contact or
+// within the lock are rejected as palm. Keeping it in the core means Windows M2
+// (WM_POINTER / Wintab) reuses the identical judgment.
+
+/// Stable C ABI routing codes returned by [`akapen_palm_route`]. Mirrored in
+/// `include/akapen.h`.
+mod route_code {
+    /// Feed to the drawing engine (pen / mouse).
+    pub const DRAW: i32 = 0;
+    /// Use for canvas pan/pinch, not drawing (a deliberate touch, no pen).
+    pub const NAVIGATE: i32 = 1;
+    /// Drop entirely — a palm touch during pen contact or the pen lock.
+    pub const IGNORE: i32 = 2;
+}
+
+/// Caller-owned palm-rejection state, persisted between [`akapen_palm_route`]
+/// calls (the shell holds one per canvas). Zero-initialized (`pen_down = 0`,
+/// `lock_active = 0`) is "no pen seen yet". `#[repr(C)]`, so the shell can hold
+/// it by value and pass a pointer in; `akapen_palm_route` reads and updates it
+/// in place.
+#[repr(C)]
+pub struct AkapenPalmState {
+    /// Non-zero while a pen is in contact (between its Down and Up).
+    pub pen_down: i32,
+    /// Non-zero while the post-pen lock is armed (then `lock_until_ms` is live).
+    pub lock_active: i32,
+    /// Absolute time (ms) the lock expires at; only meaningful when
+    /// `lock_active` is non-zero.
+    pub lock_until_ms: i64,
+}
+
+/// Routes one classified pointer event through the core palm-rejection state
+/// machine (spec §5.2), updating `state` in place. Pure apart from that state:
+/// time is the injected `now_ms` (monotonic milliseconds), never read here.
+///
+/// - `kind`: 0=Pen, 1=Touch, 2=Mouse (matches [`akapen_pointer`]).
+/// - `phase`: 0=Down, 1=Move, 2=Up.
+/// - `now_ms`: a monotonic timestamp in milliseconds.
+///
+/// Returns a [`route_code`]: `0`=Draw, `1`=Navigate, `2`=Ignore.
+///
+/// # Safety
+/// `state` must be null or a valid, writable pointer to an `AkapenPalmState`.
+#[no_mangle]
+pub unsafe extern "C" fn akapen_palm_route(
+    state: *mut AkapenPalmState,
+    kind: c_int,
+    phase: c_int,
+    now_ms: i64,
+) -> i32 {
+    let kind = match kind {
+        1 => PointerKind::Touch,
+        2 => PointerKind::Mouse,
+        _ => PointerKind::Pen,
+    };
+    if state.is_null() {
+        // No state to consult (and none to update): fail *closed* for touch so a
+        // missing state can never leak a palm into drawing, and open for
+        // pen/mouse so real input still works.
+        return match kind {
+            PointerKind::Touch => route_code::IGNORE,
+            _ => route_code::DRAW,
+        };
+    }
+    let st = &mut *state;
+    let mut core = PalmState::from_parts(
+        st.pen_down != 0,
+        if st.lock_active != 0 {
+            Some(st.lock_until_ms)
+        } else {
+            None
+        },
+    );
+    let phase = match phase {
+        0 => Phase::Down,
+        2 => Phase::Up,
+        _ => Phase::Move,
+    };
+    let routing = akapen_core::palm_route(&mut core, kind, phase, now_ms);
+    let (pen_down, lock_until) = core.into_parts();
+    st.pen_down = pen_down as i32;
+    match lock_until {
+        Some(until) => {
+            st.lock_active = 1;
+            st.lock_until_ms = until;
+        }
+        None => {
+            st.lock_active = 0;
+            st.lock_until_ms = 0;
+        }
+    }
+    match routing {
+        Routing::Draw => route_code::DRAW,
+        Routing::Navigate => route_code::NAVIGATE,
+        Routing::Ignore => route_code::IGNORE,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -870,6 +974,67 @@ mod tests {
             akapen_free(std::ptr::null_mut());
             akapen_undo(std::ptr::null_mut());
             assert_eq!(akapen_pressure_stuck(std::ptr::null_mut()), 0);
+        }
+    }
+
+    // ── Palm rejection bridge (spec §5.2) ──
+
+    #[test]
+    fn palm_route_bridges_pen_lock_and_touch_gating() {
+        // Codes mirror akapen_pointer: kind 0=Pen,1=Touch,2=Mouse; phase
+        // 0=Down,1=Move,2=Up. Routing 0=Draw,1=Navigate,2=Ignore.
+        let mut st = AkapenPalmState {
+            pen_down: 0,
+            lock_active: 0,
+            lock_until_ms: 0,
+        };
+        unsafe {
+            // Touch alone → navigate (pan), never draw.
+            assert_eq!(
+                akapen_palm_route(&mut st, 1, 0, 0),
+                route_code::NAVIGATE,
+                "touch alone pans"
+            );
+            // Pen down draws and marks pen_down.
+            assert_eq!(akapen_palm_route(&mut st, 0, 0, 10), route_code::DRAW);
+            assert_eq!(st.pen_down, 1);
+            // Touch while the pen is down → ignored as palm.
+            assert_eq!(
+                akapen_palm_route(&mut st, 1, 0, 11),
+                route_code::IGNORE,
+                "palm during pen contact"
+            );
+            // Pen up draws and arms the lock (default 500 ms → until 510).
+            assert_eq!(akapen_palm_route(&mut st, 0, 2, 10), route_code::DRAW);
+            assert_eq!(st.pen_down, 0);
+            assert_eq!(st.lock_active, 1);
+            assert_eq!(st.lock_until_ms, 510);
+            // Touch inside the lock window → still ignored.
+            assert_eq!(akapen_palm_route(&mut st, 1, 0, 400), route_code::IGNORE);
+            // Touch past the lock → navigates again.
+            assert_eq!(akapen_palm_route(&mut st, 1, 0, 510), route_code::NAVIGATE);
+            // Mouse always draws (never a palm).
+            assert_eq!(akapen_palm_route(&mut st, 2, 0, 600), route_code::DRAW);
+        }
+    }
+
+    #[test]
+    fn palm_route_null_state_fails_closed_for_touch() {
+        unsafe {
+            // No state: pen/mouse still work, but a touch is rejected rather than
+            // risk leaking a palm into drawing.
+            assert_eq!(
+                akapen_palm_route(std::ptr::null_mut(), 0, 0, 0),
+                route_code::DRAW
+            );
+            assert_eq!(
+                akapen_palm_route(std::ptr::null_mut(), 2, 0, 0),
+                route_code::DRAW
+            );
+            assert_eq!(
+                akapen_palm_route(std::ptr::null_mut(), 1, 0, 0),
+                route_code::IGNORE
+            );
         }
     }
 
