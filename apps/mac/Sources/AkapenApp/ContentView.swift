@@ -101,7 +101,7 @@ struct ContentView: View {
             Text(state.statusText).font(.caption).foregroundColor(.secondary)
             Spacer()
             if state.pressureWarning {
-                Label("Pressure not detected — check the tablet driver / Windows Ink.",
+                Label("Pressure not detected — check the tablet driver / pen pressure settings.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundColor(.orange)

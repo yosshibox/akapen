@@ -30,6 +30,17 @@ public enum AkapenPressureCurve: Int32 {
     case hard = 2
 }
 
+/// Failure kinds from the 3-file export. Each maps to a distinct non-zero
+/// return code of `akapen_export_to_dir` (crates/akapen-ffi/src/lib.rs); the
+/// UI turns these into a human-readable cause (spec §4.5, data-loss guard).
+public enum AkapenExportError: Error {
+    case invalidArgs // rc 1: null handle / bad path
+    case createDirFailed // rc 2: could not create the output (_review) folder
+    case encodeFailed // rc 3: could not serialize the vector annotation JSON
+    case writeFailed // rc 4: could not write one of the export files
+    case unknown(Int32) // any other non-zero code
+}
+
 /// A decoded RGBA frame the UI can render.
 public struct AkapenImage {
     public let width: Int
@@ -111,12 +122,22 @@ public final class AkapenEngine {
     }
 
     /// Writes the 3-file export into `dir` using `stem` as the base name.
-    @discardableResult
-    public func export(toDir dir: String, stem: String) -> Bool {
-        dir.withCString { cdir in
+    /// Throws `AkapenExportError` on failure so callers can surface the cause
+    /// (the C ABI returns a distinct non-zero code per failure kind).
+    public func export(toDir dir: String, stem: String) throws {
+        let rc = dir.withCString { cdir in
             stem.withCString { cstem in
-                akapen_export_to_dir(handle, cdir, cstem) == 0
+                akapen_export_to_dir(handle, cdir, cstem)
             }
+        }
+        // Codes mirror `akapen_export_to_dir` in crates/akapen-ffi/src/lib.rs.
+        switch rc {
+        case 0: return
+        case 1: throw AkapenExportError.invalidArgs
+        case 2: throw AkapenExportError.createDirFailed
+        case 3: throw AkapenExportError.encodeFailed
+        case 4: throw AkapenExportError.writeFailed
+        default: throw AkapenExportError.unknown(rc)
         }
     }
 

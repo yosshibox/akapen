@@ -115,13 +115,28 @@ final class AppState: ObservableObject {
         guard let e = engine, let url = currentURL else { return false }
         let dir = url.deletingLastPathComponent().appendingPathComponent("_review")
         let stem = url.deletingPathExtension().lastPathComponent
-        if e.export(toDir: dir.path, stem: stem) {
+        do {
+            try e.export(toDir: dir.path, stem: stem)
             hasUnsavedStrokes = false
             statusText = "Saved review for \(url.lastPathComponent) → _review/"
             return true
-        } else {
-            statusText = "Save failed."
+        } catch {
+            statusText = "Save failed for \(url.lastPathComponent): "
+                + "\(saveFailureCause(error)). Frame not changed."
             return false
+        }
+    }
+
+    /// Maps an export failure to a short, human-readable cause for the status bar
+    /// (kept in sync with `AkapenExportError` / the C ABI codes).
+    private func saveFailureCause(_ error: Error) -> String {
+        switch error {
+        case AkapenExportError.createDirFailed: return "couldn't create _review folder"
+        case AkapenExportError.encodeFailed: return "couldn't encode annotation data"
+        case AkapenExportError.writeFailed: return "couldn't write review files"
+        case AkapenExportError.invalidArgs: return "invalid save request"
+        case AkapenExportError.unknown(let code): return "unknown error (code \(code))"
+        default: return "unexpected error"
         }
     }
 
@@ -135,8 +150,10 @@ final class AppState: ObservableObject {
         }
         // フレームを切り替えるときは、描き込みがあれば自動保存してから移動する
         // (§4.5: 確認ダイアログではなく自動保存。非ダーティ時は空ファイルを作らない)。
+        // 保存に失敗した場合は現フレームを維持する(データ損失防止。statusText は
+        // save() が失敗理由を設定済み)。
         if hasUnsavedStrokes {
-            save() // 既存の _review/ 命名・衝突回避(-2,-3)経路をそのまま使う
+            guard save() else { return } // 既存の _review/ 命名・衝突回避(-2,-3)経路をそのまま使う
         }
         open(url: siblings[next])
     }

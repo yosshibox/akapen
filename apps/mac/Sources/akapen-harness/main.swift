@@ -61,9 +61,10 @@ print("pressure stuck warning: \(engine.pressureStuck)")
 engine.undo()
 engine.redo()
 
-let ok = engine.export(toDir: outDir, stem: "harness")
-guard ok else {
-    FileHandle.standardError.write(Data("export failed\n".utf8))
+do {
+    try engine.export(toDir: outDir, stem: "harness")
+} catch {
+    FileHandle.standardError.write(Data("export failed: \(error)\n".utf8))
     exit(2)
 }
 
