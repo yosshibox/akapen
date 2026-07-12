@@ -183,8 +183,76 @@ This project (`apps/windows`), by contrast, is the real M2 shell:
   modest — the mac shell has no dedicated dirty-marker UI either.
 - Output directory / naming stay fixed at `<input's folder>/_review/` with
   the engine's default suffixes; configurable output dir mode + suffixes
-  (spec §4.7) remains **M2-E** scope (unaddressed by this chapter — see
-  below).
+  (spec §4.7) is handled by **M2-E** below.
+
+## In scope this chapter (M2-E)
+
+- **Independent Settings window** (`SettingsWindow.xaml` + `.xaml.cs`): a
+  top-level WinUI 3 `Window` (not a modal child, closing it leaves the main
+  window running). Opened by the toolbar `Settings…` button or the `Ctrl+,`
+  KeyboardAccelerator (mac Cmd+, idiom写像; VK_OEM_COMMA = 0xBC, registered
+  in `RegisterGlobalAccelerators` since `Windows.System.VirtualKey` has no
+  named member for the comma — same shape as `[` / `]`). `MainWindow` holds
+  the `_settingsWindow` field, `EnsureSettingsWindow()` activates an
+  existing window or spins up a fresh one; the `Closed` handler nulls the
+  field so the next Ctrl+, always opens a fresh copy.
+- **Persistence — plain JSON at `%LocalAppData%\Akapen\settings.json`**
+  (via `System.Text.Json`), *not* WinAppSDK's
+  `Microsoft.Windows.Storage.ApplicationData.GetForUnpackagedAsync(...)`.
+  Rationale:
+  - the unpackaged `ApplicationData` bring-up needs a `publisher` argument
+    whose semantics vary between packaged and unpackaged contexts and
+    require an async initialization step that adds start-up complexity to
+    a Settings window that would otherwise be synchronous;
+  - the settings surface is 5 flat string keys with no nesting, so
+    `Utf8JsonWriter` is smaller than any KVS wrapper and lets a user open
+    `notepad` on the file to diff or hand-fix it;
+  - the JSON path itself is discoverable (Explorer address bar) which
+    matches the way `apps/mac`'s @AppStorage lives in a discoverable
+    plist under `~/Library/Preferences/`.
+
+  The JSON keys are 1-to-1 with the mac shell's
+  `SettingsView.swift::AkapenSettingsKey` enum
+  (`output.dirMode` / `output.subfolderName` / `output.fixedDir` /
+  `output.flatSuffix` / `output.strokesSuffix`).
+- **AppState-shaped resolution layer** (`SettingsStore.cs`): mirrors
+  `AppState.swift`'s `resolveOutputDir(input:)` and `resolveOutputNaming()`.
+  `TrySave()` calls `SettingsStore.Load()`, `ResolveOutputDir(...)`, then
+  `ResolveOutputNaming(...)`; on success the fallback warning (if any) is
+  merged into the same StatusText line as the "Saved review for ..."
+  message so the success text can't silently clobber it (the same failure
+  mode Codex flagged on the mac side during Ch.6 review).
+- **UI validation with a two-tier defensive posture**: `SettingsWindow`
+  paints each `TextBox`'s `BorderBrush` red (thickness 2) and drops a
+  red helper text below when the current value is invalid, using the
+  same rules as `SettingsStore.Resolve*`:
+  - Subfolder name — non-empty, no `/`, no `\\`, not a bare `.` or `..`
+    (after trimming `char.IsWhiteSpace` — Unicode `White_Space` — which
+    lines up with Rust's `str::trim` and mac's
+    `.whitespacesAndNewlines`).
+  - Suffix — non-empty, no `/`, no `\\`, no `.` (same set the Rust
+    `sanitize_suffix` rejects, applied here first so the UI shows the
+    problem before it reaches the FFI).
+  - Fixed directory — non-empty, `Path.IsPathFullyQualified` (handles
+    Windows drive letters and UNC), and `Directory.Exists`.
+
+  Values that fail validation *are still saved to disk* (matches mac's
+  @AppStorage which never rejects a raw string); the `Resolve*` helpers
+  fall back to defaults at save time, and the Rust `sanitize_suffix`
+  (`crates/akapen-ffi/src/lib.rs`) is the third and final gate so no
+  invalid value ever lands in a filename.
+- **FolderPicker HWND initialization**: the `Browse…` button uses
+  `Windows.Storage.Pickers.FolderPicker` with
+  `WinRT.Interop.InitializeWithWindow.Initialize(...)` on the
+  SettingsWindow's own HWND — the same unpackaged-quirk fix
+  `MainWindow.OnOpenClick` uses for `FileOpenPicker`. Skipping this
+  step throws `NoWindow` at `PickSingleFolderAsync` time.
+- **FFI setter integration**: `TrySave` calls
+  `NativeMethods.akapen_set_output_naming(engine, flatUtf8, strokesUtf8)`
+  immediately before `akapen_export_to_dir`, so a settings change is
+  guaranteed to reflect on the very next save (mirrors mac
+  `AkapenEngine.setOutputNaming(flatSuffix:strokesSuffix:)` called from
+  `AppState.save()` on every save).
 
 ## Not yet in scope (future M2 / M3 chapters)
 
@@ -210,8 +278,15 @@ This project (`apps/windows`), by contrast, is the real M2 shell:
   `AKAPEN_TOOL_*` 定数は既に定義済み、UI 側の追加待ち。
 - **M3 color picker**: 任意色ピッカ (WinUI `ColorPicker`) — M2-D は
   10-swatch 固定パレットのみ、mac 側の `ColorPicker` 相当は M3。
-- **Settings**: Output-dir mode + suffix configuration (spec §4.7),
-  equivalent to `SettingsView.swift` on mac.
+- **Settings reset button + project-scoped overrides**: `SettingsWindow`
+  ships no "Reset to defaults" affordance and reads/writes exactly one
+  location (`%LocalAppData%\Akapen\settings.json`). Spec §4.7's "プロジェ
+  クトごとの上書きは将来検討" is left for a later chapter; deleting the
+  JSON file by hand is the interim reset path.
+- **napi-rs setter exposure**: `akapen_set_output_naming` is not yet
+  exposed to the Node binding surface (`bindings/node`); that lift is
+  Ch.4 scope. Nothing outside the .NET / SwiftUI shells consumes the
+  setter today.
 - **MSIX packaging**: distributable artifact + auto-update. `WindowsPackageType`
   currently stays `None` so the dev loop is `dotnet build && dotnet run`.
 - **4K perf gate**: spec §6 headline numbers on real hardware, first
@@ -307,8 +382,11 @@ AkapenApp/
 ├─ AkapenApp.csproj                # net8.0-windows10.0.19041.0, unpackaged
 ├─ App.xaml + .cs                  # WinUI Application entry, creates MainWindow
 ├─ MainWindow.xaml + .cs           # Toolbar + SwapChainPanel + SidePanel + status bar
+├─ SettingsWindow.xaml + .cs       # M2-E: 出力先モード・接尾辞・固定パスの独立設定ウィンドウ
+├─ SettingsStore.cs                # M2-E: JSON永続化 + Resolve* ヘルパ (mac AppState.resolve* に相当)
 ├─ PaletteColors.cs                # MS Paint 10色パレット定義(1箇所集約)
 ├─ NaturalStringComparer.cs        # StrCmpLogicalW-backed natural sort (M2-F sibling sequence)
+├─ SequenceStepper.cs              # M2-F: 連番トークン優先の Prev/Next 隣接解決
 ├─ Interop/
 │  └─ SwapChainPanelNativeInterop.cs  # ISwapChainPanelNative QueryInterface
 └─ app.manifest                    # PerMonitorV2 DPI + Windows 10+ compat

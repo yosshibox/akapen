@@ -155,6 +155,28 @@ jobs:
         # save) is a manual .34 Session 1 step — see apps/windows/README.md.
         run: dotnet build apps/windows/AkapenApp/AkapenApp.csproj -c Release
 
+  # Boundary-value tests for SettingsStore.cs (spec §4.7 / §9 M2-E). Added in
+  # response to Codex 再レビュー Medium 2: a manual /tmp test harness existed
+  # only on a dev machine and was never runnable from the repo or in CI.
+  # SettingsStore.cs itself has zero WinUI / Windows App SDK dependency (see
+  # its own header comment — only System.IO / System.Text.Json), so unlike
+  # apps-windows-shell this job needs neither a windows-latest runner nor the
+  # Rust FFI build; it runs the AkapenApp.Tests console project directly on
+  # ubuntu-latest, which is the lighter/faster choice and keeps this
+  # regression check independent of the WindowsAppSDK toolchain being
+  # available at all.
+  apps-windows-tests:
+    name: apps / windows tests (SettingsStore)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Run SettingsStore boundary-value tests
+        run: dotnet run --project apps/windows/AkapenApp.Tests -c Release
+
   bindings-node:
     name: bindings / node (napi-rs)
     runs-on: ubuntu-latest

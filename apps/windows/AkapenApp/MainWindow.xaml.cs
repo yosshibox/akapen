@@ -1,7 +1,9 @@
 // Akapen main window (spec §7.4-4 / §9 M2 — WinUI 3 shell; M2-A first-cut
 // scaffold, M2-B1 real pointer kind/pressure + palm rejection, M2-D tool /
 // color / size / undo-redo UI, M2-F next/prev frame navigation + save-
-// failure data-loss guard).
+// failure data-loss guard, M2-E output-dir mode + suffix settings — spec
+// §4.7 — via an independent top-level SettingsWindow and a
+// SettingsStore-backed JSON at %LocalAppData%\Akapen\settings.json).
 //
 // Responsibilities kept in this file (mirrors apps/mac/Sources/AkapenApp/
 // AppState.swift + SidePanelView.swift, folded into the window itself since
@@ -58,7 +60,8 @@
 //     P/E/[/]/Ctrl+Z/Ctrl+Y/Ctrl+Shift+Z/Ctrl+S先取り) — M3.
 //   - SidePanel の hover-fade / フローティング化 — M3 の refine 候補
 //     (README 参照)。M2-D は Grid の右列に固定配置。
-//   - Settings pane (spec §4.7) covering output dir mode + suffixes.
+//   - Settings のリセットボタン / プロジェクトごとの設定上書き — spec §4.7
+//     の「将来検討」に相当。M2-E は「アプリローカルの単一 settings.json」まで。
 //   - Zoom / pan / rotate remap (view scale != 1, non-zero rotation).
 //     PushPointerSample inverts the *centered, scale-1* placement
 //     OnPresentTick renders (panel DIP size <-> image pixel size), which
@@ -200,6 +203,17 @@ public sealed partial class MainWindow : Window
     // at attach time. For M2-A we don't remap on DPI changes (no PMv2
     // reconfigure), the shell logs the initial value.
     private float _scaleFactor = 1.0f;
+
+    // ── M2-E settings window (spec §4.7) ───────────────────────────────────
+    // The independent top-level SettingsWindow the "Settings…" button /
+    // Ctrl+, opens. Non-null while open; cleared to null in Closed so a
+    // second Ctrl+, always re-opens a fresh window instead of trying to
+    // Activate a disposed one. Not a modal — closing it does not touch the
+    // MainWindow's engine/surface state, and TrySave always re-reads the
+    // saved JSON via SettingsStore.Load() so a change made while the
+    // SettingsWindow is open is picked up on the next save (no explicit
+    // notification wiring needed).
+    private SettingsWindow? _settingsWindow;
 
     // ── M2-D tool state (deferred-apply) ───────────────────────────────────
     // Shell-owned copies of the current tool / color / brush size. The UI
@@ -982,34 +996,83 @@ public sealed partial class MainWindow : Window
             return false;
         }
 
-        // Mirrors the mac shell's default output dir: `<input's folder>/_review/`
-        // (spec §4.3). Suffix configuration (§4.7) is a later chapter; here
-        // we take the engine's built-in defaults (review / strokes).
-        string dir = Path.Combine(Path.GetDirectoryName(_currentPath) ?? ".", "_review");
+        // M2-E (spec §4.7): 出力先とファイル名の接尾辞は毎回ディスクの
+        // settings.json から読み直す。SettingsWindow は変更をその場で書くので、
+        // 開いたままの SettingsWindow から別ウィンドウでも設定が反映される
+        // (mac の AppState.save が UserDefaults.standard を毎回読むのと同型)。
+        // loadWarning(JSON 破損・I/O 失敗で既定値にフォールバックした旨)は
+        // Codex 指摘 Medium 1 対応 — 黙って既定値で export されると、ユーザー
+        // は「設定した接尾辞が反映されない」原因を statusText からしか追えない
+        // ため、ここでも他の警告と同じ経路に合流させる。
+        var (settings, loadWarning) = SettingsStore.Load();
+        var (dir, dirWarning) = SettingsStore.ResolveOutputDir(_currentPath, settings);
+        var (flatSuffix, strokesSuffix, namingWarning) =
+            SettingsStore.ResolveOutputNaming(settings);
         string stem = Path.GetFileNameWithoutExtension(_currentPath);
 
+        // engine の naming を先に上書きしてから export を叩く。null(=既定に
+        // 戻す)を渡す運用は SettingsStore 側で常に妥当な値を返しているため
+        // 不要 — 有効な UTF-8 バイト列を素直に渡す(mac AppState.save の
+        // engine.setOutputNaming(flatSuffix:strokesSuffix:) と同じ順序)。
+        // Rust 側 sanitize_suffix が二段目の防衛として同じ規則で弾く。
         int rc;
         unsafe
         {
+            byte[] flatUtf8 = System.Text.Encoding.UTF8.GetBytes(flatSuffix + "\0");
+            byte[] strokesUtf8 = System.Text.Encoding.UTF8.GetBytes(strokesSuffix + "\0");
             byte[] dirUtf8 = System.Text.Encoding.UTF8.GetBytes(dir + "\0");
             byte[] stemUtf8 = System.Text.Encoding.UTF8.GetBytes(stem + "\0");
+            fixed (byte* pFlat = flatUtf8)
+            fixed (byte* pStrokes = strokesUtf8)
             fixed (byte* pDir = dirUtf8)
             fixed (byte* pStem = stemUtf8)
             {
+                NativeMethods.akapen_set_output_naming(
+                    (AkapenEngine*)_engine, pFlat, pStrokes);
                 rc = NativeMethods.akapen_export_to_dir((AkapenEngine*)_engine, pDir, pStem);
             }
         }
 
         if (rc == 0)
         {
-            SetStatus($"Saved review for {Path.GetFileName(_currentPath)} → {dir}");
+            // 成功メッセージに load/dir/naming の各フォールバック警告を合流
+            // させる(mac AppState.save の "Saved review for X → /path/ (設定の
+            // 固定パスが無効なので _review/ にフォールバック)" と同じ形式)。
+            // 単独メッセージだと成功で警告が消えてしまうため、同一 statusText
+            // に載せる Codex レビュー指摘への対応も踏襲(loadWarning も同列)。
+            string message = $"Saved review for {Path.GetFileName(_currentPath)} → {dir}";
+            string? combined = JoinWarnings(loadWarning, dirWarning, namingWarning);
+            if (combined is not null)
+            {
+                message += $" ({combined})";
+            }
+            SetStatus(message);
             _hasUnsavedStrokes = false;
             UpdateDirtyIndicator();
             return true;
         }
 
-        SetStatus($"Save failed ({DescribeExportRc(rc)}). Frame not changed.");
+        string failMessage = $"Save failed ({DescribeExportRc(rc)}). Frame not changed.";
+        if (loadWarning is not null)
+        {
+            failMessage += $" ({loadWarning})";
+        }
+        SetStatus(failMessage);
         return false;
+    }
+
+    /// <summary>
+    /// null をスキップして "; " で連結する。3件とも null なら null を返す
+    /// (呼び出し側が「警告なし」と「空文字列の警告」を区別できるように)。
+    /// </summary>
+    private static string? JoinWarnings(params string?[] warnings)
+    {
+        List<string> present = new();
+        foreach (string? w in warnings)
+        {
+            if (w is not null) present.Add(w);
+        }
+        return present.Count == 0 ? null : string.Join("; ", present);
     }
 
     private static string DescribeExportRc(int rc) => rc switch
@@ -1043,6 +1106,33 @@ public sealed partial class MainWindow : Window
         FreeEngine();
         SwapChainPanelNativeInterop.Release(_panelNativePtr);
         _panelNativePtr = IntPtr.Zero;
+
+        // M2-E: SettingsWindow が開きっぱなしなら閉じる(MainWindow が閉じるのに
+        // 独立トップレベル Window が残ると WinUI 3 はプロセスを終了しないため —
+        // 独立 Window の Close は明示。子ではなくトップレベルなので、
+        // MainWindow.Content.XamlRoot に紐付いていない点にも留意)。
+        _settingsWindow?.Close();
+        _settingsWindow = null;
+    }
+
+    // ── M2-E: Settings ウィンドウ起動 ──────────────────────────────────────
+
+    private void OnSettingsClick(object sender, RoutedEventArgs e) => EnsureSettingsWindow();
+
+    /// <summary>
+    /// 既に開いていれば <see cref="Microsoft.UI.Xaml.Window.Activate"/> でフォ
+    /// ーカスするだけ、無ければ新規に <see cref="SettingsWindow"/> を生成して
+    /// Activate する。Closed で参照を null に戻して次回の Ctrl+, が fresh
+    /// window を開けるようにしておく。
+    /// </summary>
+    private void EnsureSettingsWindow()
+    {
+        if (_settingsWindow is null)
+        {
+            _settingsWindow = new SettingsWindow();
+            _settingsWindow.Closed += (_, _) => _settingsWindow = null;
+        }
+        _settingsWindow.Activate();
     }
 
     private void SetStatus(string text)
@@ -1312,6 +1402,18 @@ public sealed partial class MainWindow : Window
             NudgeSize(+1.0f); // `]`
             args.Handled = true;
         });
+        // M2-E: Ctrl+, で SettingsWindow を開く / フォーカスする(spec §4.7)。
+        // mac Cmd+, の慣習を Windows に写像。VK_OEM_COMMA (0xBC) は
+        // Windows.System.VirtualKey に named member が無いので raw キャスト
+        // で登録する(`[`/`]` と同じ事情)。text-input が focus 中は Ctrl+,
+        // をそちらへ譲る(将来の Text ツール / Settings 内 TextBox で
+        // Ctrl+, が発火してモーダル的に別ウィンドウが開くと混乱するため)。
+        AddRootAccelerator((VirtualKey)0xBC, VirtualKeyModifiers.Control, (_, args) =>
+        {
+            if (IsTextInputFocused()) return;
+            EnsureSettingsWindow();
+            args.Handled = true;
+        });
     }
 
     /// <summary>
@@ -1320,11 +1422,14 @@ public sealed partial class MainWindow : Window
     /// MainWindow.xaml, are unscoped app accelerators (spec §3 主要行の先取
     /// り) — WinUI resolves them at the window level regardless of which
     /// control currently has keyboard focus (see "Resolving accelerators" in
-    /// Microsoft's keyboard-accelerators doc). M2-D ships no text-input
-    /// control anywhere in this window, so today this never actually fires
-    /// with a text box focused. But a Text tool or the Settings pane (both
-    /// M3) will add one, and once that happens these single-key/Ctrl+Z+Y+
-    /// Shift+Z shortcuts would otherwise steal keystrokes mid-edit — the same
+    /// Microsoft's keyboard-accelerators doc). M2-D and M2-E ship no
+    /// text-input control on this window itself (M2-E's Settings TextBoxes
+    /// live in a separate top-level SettingsWindow whose own XamlRoot is
+    /// not the one this guard walks), so today this never actually fires
+    /// with a text box focused. But a Text tool (M3) will add one to
+    /// MainWindow itself, and once that happens these single-key/Ctrl+Z+Y+
+    /// Shift+Z/Ctrl+, shortcuts would otherwise steal keystrokes mid-edit
+    /// — the same
     /// hazard the core's own contract already guards against
     /// (keymap.rs::resolve returns None while composing || text_editing; see
     /// the generated composing/text_editing parameters on

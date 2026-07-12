@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  出力先・接尾辞のユーザー設定ウィンドウ(spec §4.7 / §9 M2 — M2-E)。
+  mac シェルの SettingsView.swift(apps/mac/Sources/AkapenApp/SettingsView.swift)
+  を WinUI 3 に写像した独立トップレベル Window。MainWindow のモーダル子ではなく、
+  閉じても本体は生きたまま。開き方は MainWindow ツールバーの「Settings…」ボタン、
+  または Ctrl+, KeyboardAccelerator(mac Cmd+, 慣習の写像)。
+  詳細な設計判断は SettingsWindow.xaml.cs のクラスコメントを参照。
+
+  レイアウト(縦):
+    ┌────────────────────────────────────────┐
+    │ Output directory (§4.7)                 │
+    │ ○ Beside input folder                    │
+    │   Subfolder name: [_review          ]    │  ← BesideInput 選択時のみ表示
+    │   help / error text                      │
+    │ ○ Fixed folder                           │
+    │   Folder path: [ ...      ] [Browse…]    │  ← FixedAbsolute 選択時のみ表示
+    │   help / error text                      │
+    │ ────────────────────────────────────────│
+    │ Artifact suffixes (§4.3 / §4.7)          │
+    │ Flat:    [review          ]              │
+    │   help / error text                      │
+    │ Strokes: [strokes         ]              │
+    │   help / error text                      │
+    │ ────────────────────────────────────────│
+    │ 設定はこの Windows のユーザーごとに保存 │
+    │ されます(%LocalAppData%\Akapen\...) 。 │
+    └────────────────────────────────────────┘
+
+  無効入力は各 TextBox の BorderBrush を赤に切り替え、直下のヘルプ TextBlock
+  で理由を Foreground=Red で表示する(mac の overlay RoundedRectangle + Text と
+  同じ視覚言語)。値そのものは無効でも保存される — Rust 側 sanitize_suffix と
+  Windows 側 SettingsStore.Resolve* が二段で既定にフォールバックする。
+-->
+<Window
+    x:Class="AkapenApp.SettingsWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="Akapen — Settings">
+    <Grid Padding="20" RowSpacing="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ── §4.7 出力先セクション ─────────────────────────────────── -->
+        <TextBlock Grid.Row="0"
+                   Text="出力先(§4.7)"
+                   FontWeight="SemiBold"
+                   FontSize="14"/>
+
+        <!-- RadioButtons(GroupName共有)で二択。SelectionChanged で
+             SubfolderPanel / FixedDirPanel の Visibility を切り替える。 -->
+        <StackPanel Grid.Row="1" Spacing="6">
+            <RadioButton x:Name="BesideInputRadio"
+                         Content="入力フォルダの中(相対)"
+                         GroupName="OutputDir"
+                         Checked="OnOutputDirModeChanged"/>
+            <RadioButton x:Name="FixedAbsoluteRadio"
+                         Content="固定の絶対パス"
+                         GroupName="OutputDir"
+                         Checked="OnOutputDirModeChanged"/>
+        </StackPanel>
+
+        <!-- besideInput モード:サブフォルダ名 TextBox + ヘルプ。 -->
+        <StackPanel x:Name="SubfolderPanel"
+                    Grid.Row="2"
+                    Spacing="4"
+                    Margin="24,0,0,0">
+            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <TextBlock Text="サブフォルダ名"
+                           Width="120"
+                           VerticalAlignment="Center"
+                           FontSize="12"/>
+                <TextBox x:Name="SubfolderNameBox"
+                         Width="220"
+                         PlaceholderText="_review"
+                         TextChanged="OnSubfolderNameChanged"
+                         AutomationProperties.Name="Output subfolder name"/>
+            </StackPanel>
+            <TextBlock x:Name="SubfolderHelpText"
+                       FontSize="11"
+                       TextWrapping="Wrap"
+                       Foreground="Gray"/>
+        </StackPanel>
+
+        <!-- fixedAbsolute モード:絶対パス TextBox + Browse ボタン + ヘルプ。 -->
+        <StackPanel x:Name="FixedDirPanel"
+                    Grid.Row="3"
+                    Spacing="4"
+                    Margin="24,0,0,0">
+            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <TextBlock Text="固定パス"
+                           Width="120"
+                           VerticalAlignment="Center"
+                           FontSize="12"/>
+                <TextBox x:Name="FixedDirBox"
+                         Width="260"
+                         PlaceholderText="C:\path\to\reviews"
+                         TextChanged="OnFixedDirChanged"
+                         AutomationProperties.Name="Fixed output directory"/>
+                <Button x:Name="BrowseFixedDirButton"
+                        Content="Browse…"
+                        Click="OnBrowseFixedDirClick"
+                        AutomationProperties.Name="Browse for fixed output directory"/>
+            </StackPanel>
+            <TextBlock x:Name="FixedDirHelpText"
+                       FontSize="11"
+                       TextWrapping="Wrap"
+                       Foreground="Gray"/>
+        </StackPanel>
+
+        <!-- Divider — RowSpacing で十分に間が空くので Border 1本で足りる。 -->
+        <Border Grid.Row="4" Height="1" Background="#3a3a3a" Margin="0,4,0,4"/>
+
+        <!-- ── §4.3 / §4.7 命名サフィックスセクション ──────────────── -->
+        <TextBlock Grid.Row="5"
+                   Text="ファイル名の接尾辞(§4.3 / §4.7)"
+                   FontWeight="SemiBold"
+                   FontSize="14"/>
+
+        <StackPanel Grid.Row="6" Spacing="10" Margin="0,4,0,0">
+            <StackPanel Spacing="4">
+                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <TextBlock Text="フラット PNG"
+                               Width="120"
+                               VerticalAlignment="Center"
+                               FontSize="12"/>
+                    <TextBox x:Name="FlatSuffixBox"
+                             Width="220"
+                             PlaceholderText="review"
+                             TextChanged="OnFlatSuffixChanged"
+                             AutomationProperties.Name="Flat PNG suffix"/>
+                </StackPanel>
+                <TextBlock x:Name="FlatSuffixHelpText"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Foreground="Gray"/>
+            </StackPanel>
+
+            <StackPanel Spacing="4">
+                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <TextBlock Text="ストローク"
+                               Width="120"
+                               VerticalAlignment="Center"
+                               FontSize="12"/>
+                    <TextBox x:Name="StrokesSuffixBox"
+                             Width="220"
+                             PlaceholderText="strokes"
+                             TextChanged="OnStrokesSuffixChanged"
+                             AutomationProperties.Name="Strokes suffix"/>
+                </StackPanel>
+                <TextBlock x:Name="StrokesSuffixHelpText"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Foreground="Gray"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- footer: 保存先の説明 + プロジェクト単位設定は将来 (§4.7 の但し書き)。 -->
+        <TextBlock Grid.Row="7"
+                   FontSize="11"
+                   TextWrapping="Wrap"
+                   Foreground="Gray"
+                   Margin="0,12,0,0"
+                   Text="設定はこの Windows のユーザーごとに保存されます(%LocalAppData%\Akapen\settings.json)。プロジェクト単位の上書きは将来検討です。"/>
+
+        <!-- 保存失敗 / 読み込み時の破損・I/O 警告(Codex 指摘 Medium 1)。既定は
+             非表示。SettingsStore.Save が false を返した、または起動時の
+             SettingsStore.Load が warning を返したときのみ表示する。 -->
+        <TextBlock x:Name="SaveStatusText"
+                   Grid.Row="8"
+                   FontSize="11"
+                   TextWrapping="Wrap"
+                   Foreground="Red"
+                   Margin="0,4,0,0"
+                   Visibility="Collapsed"
+                   AutomationProperties.LiveSetting="Assertive"/>
+    </Grid>
+</Window>

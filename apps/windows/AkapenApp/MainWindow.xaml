@@ -177,6 +177,23 @@
                     <KeyboardAccelerator Key="PageDown" Invoked="OnStepAcceleratorInvoked"/>
                 </Button.KeyboardAccelerators>
             </Button>
+
+            <AppBarSeparator/>
+
+            <!-- M2-E (spec §4.7): 出力先モード・接尾辞・固定パスなどのユーザー設定
+                 を編集する独立トップレベルウィンドウを開く。mac の
+                 SettingsView(Settings シーン、Cmd+, で開く)を写像。Ctrl+, は
+                 code-behind の RegisterGlobalAccelerators で登録している
+                 (VirtualKey.OemComma = 0xBC が Windows.System.VirtualKey に
+                 名前付きメンバとして存在しないため、Undo/Redo の PageUp と違い
+                 ここでは XAML 属性で書けない)。IsTextInputFocused ガードは M2-D
+                 と同じ運用で、Ctrl+, は Settings 起動という「モード切替」なので
+                 テキスト編集中は無効化して text-input の Ctrl+, を邪魔しない。 -->
+            <Button x:Name="SettingsButton"
+                    Content="Settings…"
+                    Click="OnSettingsClick"
+                    ToolTipService.ToolTip="Output directory / suffix settings (Ctrl+,)"
+                    AutomationProperties.Name="Settings"/>
         </StackPanel>
 
         <!-- ── Canvas + SidePanel の 2 カラム(Grid.Row 1)。SwapChainPanel は
