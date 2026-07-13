@@ -1,16 +1,23 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>Akapen</AssemblyName>
+    <Product>Akapen</Product>
+    <ApplicationTitle>Akapen</ApplicationTitle>
+    <ApplicationIcon>..\..\..\assets\app-icon\akapen.ico</ApplicationIcon>
     <TargetFramework>net8.0</TargetFramework>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <!-- This is a throwaway de-risk spike (see ../README.md), not the future
-         WinUI 3 shell (bindings/dotnet, M2): kept minimal on purpose, no
-         WinForms/WPF/WinUI reference, just raw user32.dll P/Invoke for the
-         HWND and DllImport("akapen") for the C ABI. -->
+    <!-- Windows MVP: raw user32.dll P/Invoke + the stable Rust C ABI. No
+         WinForms/WPF/WinUI or Windows App SDK runtime is required. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\..\assets\icons\akapen-ui-icons.svg" Link="Assets\akapen-ui-icons.svg" />
+  </ItemGroup>
 
 </Project>

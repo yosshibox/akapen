@@ -1,0 +1,31 @@
+{
+  "canvas": { "width": 64, "height": 48 },
+  "commands": [
+    { "op": "pointer", "x": 8.0, "y": 8.0, "pressure": 0.2, "kind": "pen", "phase": "down" },
+    { "op": "pointer", "x": 20.0, "y": 16.0, "pressure": 0.5, "kind": "pen", "phase": "move" },
+    { "op": "pointer", "x": 32.0, "y": 24.0, "pressure": 0.9, "kind": "pen", "phase": "up" },
+    { "op": "pointer", "x": 12.0, "y": 36.0, "pressure": 0.8, "kind": "pen", "phase": "down" },
+    { "op": "pointer", "x": 32.0, "y": 30.0, "pressure": 0.4, "kind": "pen", "phase": "move" },
+    { "op": "pointer", "x": 52.0, "y": 24.0, "pressure": 0.1, "kind": "pen", "phase": "up" }
+  ],
+  "expected": {
+    "schema": "veda-annot-1",
+    "natural_w": 64,
+    "natural_h": 48,
+    "stroke_count": 2,
+    "kinds": ["pen", "pen"],
+    "points": [
+      [
+        { "x": 8.0, "y": 8.0, "p": 0.2 },
+        { "x": 20.0, "y": 16.0, "p": 0.5 },
+        { "x": 32.0, "y": 24.0, "p": 0.9 }
+      ],
+      [
+        { "x": 12.0, "y": 36.0, "p": 0.8 },
+        { "x": 32.0, "y": 30.0, "p": 0.4 },
+        { "x": 52.0, "y": 24.0, "p": 0.1 }
+      ]
+    ],
+    "artifacts": ["golden.review.png", "golden.strokes.png", "golden.strokes.json"]
+  }
+}

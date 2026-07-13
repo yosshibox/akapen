@@ -7,7 +7,7 @@
 import CAkapen
 import Foundation
 
-public enum AkapenTool: Int32 {
+public enum AkapenTool: Int32, Hashable {
     case pen = 0
     case eraser = 1
 }
@@ -24,7 +24,7 @@ public enum AkapenPhase: Int32 {
     case up = 2
 }
 
-public enum AkapenPressureCurve: Int32 {
+public enum AkapenPressureCurve: Int32, Hashable {
     case normal = 0
     case soft = 1
     case hard = 2
@@ -150,6 +150,18 @@ public final class AkapenEngine {
 
     public func undo() { akapen_undo(handle) }
     public func redo() { akapen_redo(handle) }
+
+    /// Whether the core has a committed stroke available for undo.
+    /// The C ABI is null-safe; this wrapper owns a valid handle, so no optional
+    /// Rust/C state leaks into the SwiftUI layer.
+    public var canUndo: Bool {
+        akapen_can_undo(handle) != 0
+    }
+
+    /// Whether the core has an undone stroke available for redo.
+    public var canRedo: Bool {
+        akapen_can_redo(handle) != 0
+    }
 
     /// True if the last pen stroke carried no pressure variation (spec §5.4).
     public var pressureStuck: Bool {

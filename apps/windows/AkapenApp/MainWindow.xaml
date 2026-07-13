@@ -25,7 +25,9 @@
       mutex — cleaner than `RadioButtons` here because it can render as a
       visibly-pressed toggle pair without an item template and matches how
       most drawing apps show the active tool. Extra tools (Line / Arrow /
-      Rect / Ellipse / Text) exist in the FFI but are M3 UI scope.
+      Rect / Ellipse / Text) exist in the FFI; M3-A wires their spec §3
+      shortcut keys (U / A / R / O / T) through akapen_resolve_key with a
+      StatusText stub, and the M3-B/C/D chapters add the real UI.
     - Color palette: 10 swatches (MS Paint 上段) are built in code from
       PaletteColors.cs into the `ColorSwatchRoot` StackPanel (5 per row × 2
       rows). Placing swatches in code keeps color literals out of XAML: a
@@ -33,26 +35,29 @@
       (WinUI ColorPicker) is M3.
     - Size slider: `Minimum=1, Maximum=50, Value=10` per spec §3 defaults.
       Live px value shown next to the label. `[` / `]` shortcuts step by ±1
-      via a code-behind KeyboardAccelerator (spec §3 主要行の先取り、全表
-      対応は M3 / akapen_resolve_key 統合)。
-    - Undo / Redo: sit on the toolbar with `Ctrl+Z` and `Ctrl+Y` /
-      `Ctrl+Shift+Z` KeyboardAccelerators (the mac慣習の Ctrl+Shift+Z も併設)。
+      via the M3-A KeyDown → akapen_resolve_key → BRUSH_SMALLER/LARGER path
+      (see MainWindow.xaml.cs::OnRootKeyDown; the M2-D interim
+      RegisterGlobalAccelerators shims have been removed).
+    - Undo / Redo: sit on the toolbar. Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z now
+      route through the M3-A KeyDown → akapen_resolve_key path (single core
+      key map for both shells), so the earlier per-button KeyboardAccelerators
+      are removed to keep exactly one dispatch path for these keys.
     - SidePanel はまず固定サイズ(192 DIP)の右列で置く。mac は
       `.overlay(alignment: .trailing)` の半透明フローティング(hover で
       opacity 0.4→0.97 に戻る)だが、Windows の WinUI 3 でフローティング
       + fade を組み立てる価値は M2-D の受け入れバーを超えるので、後続の
       refine 候補として apps/windows/README.md に明記した(M3 相当)。
-    - `RootGrid` に `x:Name` を付けたのは code-behind から
-      `KeyboardAccelerators.Add(...)` するため:VirtualKey enum に `Oem4`/
-      `Oem6` (=`[`/`]`) の名前が無く、XAML の `Key="…"` 属性で書けないので
-      整数キャストで登録している(RegisterGlobalAccelerators を参照)。
+    - `RootGrid` に `x:Name` を付けたのは、M3-A で code-behind の
+      `RootGrid.KeyDown` ハンドラを介して全ショートカットを
+      akapen_resolve_key へ流すため(mac シェルの CanvasNSView.keyDown と
+      同型)。M2-D 時代の KeyboardAccelerators.Add(...) 経路は撤去済み。
 
   Design notes on M2-F scope:
-    - Prev/Next: same shape as Undo/Redo — a Button per direction, plain
-      `Click` handler, plus a `PageUp`/`PageDown` `KeyboardAccelerator` whose
-      `Invoked` only guards focus (`OnStepAcceleratorInvoked`, same pattern
-      as `OnUndoRedoAcceleratorInvoked`) and otherwise lets the accelerator's
-      default auto-Click fire. Enable/disable state
+    - Prev/Next: same shape as Undo/Redo — a Button per direction with a
+      plain `Click` handler. The PageUp/PageDown shortcuts route through
+      the M3-A KeyDown → akapen_resolve_key path (NEXT_FRAME/PREV_FRAME),
+      so the earlier per-button KeyboardAccelerators are removed to keep
+      exactly one dispatch path. Enable/disable state
       (`MainWindow.xaml.cs::UpdateStepButtonsEnabled`) reflects whether the
       current image sits strictly inside its natural-sorted sibling sequence
       (spec §4.5): first frame disables Prev, last disables Next, a lone
@@ -61,6 +66,21 @@
       spec §4.5) and aborts the step — keeping the current frame — if that
       save fails, matching the mac shell's AppState.step(forward:) data-loss
       guard. The same guard runs before Open… replaces the image.
+
+  Design notes on M3-A scope:
+    - Full spec §3 shortcut table routes through akapen_resolve_key so both
+      shells share one core key map (mac CanvasNSView.keyDown 相当)。
+      RootGrid の `KeyDown` ハンドラで ch / physical / primary / shift /
+      alt / composing / text_editing を組み立て、返された AKAPEN_ACT_* を
+      dispatch する。実装済 (M2-D/M2-F 相当) の 8 アクション
+      (TOOL_PEN/ERASER, UNDO/REDO, BRUSH_SMALLER/LARGER, NEXT/PREV_FRAME)
+      は既存経路へ振り分け、未実装の 16 アクション (残り 5 tool + zoom /
+      rotate / 色モデル) は StatusText へ「後続 M3 章で実装」を出すだけの
+      stub 経路。Ctrl+, は akapen_resolve_key に該当 ACT が無いので
+      OnRootKeyDown 内で EnsureSettingsWindow への特別分岐として拾う。
+      Ctrl+S は spec §3 の「primary+letter は OS/menu 譲り」に従い keymap.rs
+      が NONE を返すので、既存の SaveButton の KeyboardAccelerator を残して
+      OS 由来の tooltip / access key と自然に共存させている。
 
   非回帰:
     - Ctrl+S / SaveButton, SwapChainPanel 一式, palm gate, pressure warning
@@ -77,7 +97,7 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
     Title="Akapen">
-    <Grid x:Name="RootGrid">
+    <Grid x:Name="RootGrid" KeyDown="OnRootKeyDown">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -121,32 +141,22 @@
 
             <AppBarSeparator/>
 
+            <!-- M3-A: Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z route through
+                 OnRootKeyDown → akapen_resolve_key → dispatch, so no
+                 per-button KeyboardAccelerator here. Tooltip still spells
+                 the shortcut for discoverability. -->
             <Button x:Name="UndoButton"
                     Content="Undo"
                     Click="OnUndoClick"
                     IsEnabled="False"
                     ToolTipService.ToolTip="Undo (Ctrl+Z)"
-                    AutomationProperties.Name="Undo">
-                <Button.KeyboardAccelerators>
-                    <!-- Invoked="OnUndoRedoAcceleratorInvoked" (Codex Ch.9 review,
-                         Medium): guards against a future text-input control's own
-                         Ctrl+Z being stolen by this app-wide accelerator — see
-                         MainWindow.xaml.cs's IsTextInputFocused doc. -->
-                    <KeyboardAccelerator Modifiers="Control" Key="Z" Invoked="OnUndoRedoAcceleratorInvoked"/>
-                </Button.KeyboardAccelerators>
-            </Button>
+                    AutomationProperties.Name="Undo"/>
             <Button x:Name="RedoButton"
                     Content="Redo"
                     Click="OnRedoClick"
                     IsEnabled="False"
                     ToolTipService.ToolTip="Redo (Ctrl+Y / Ctrl+Shift+Z)"
-                    AutomationProperties.Name="Redo">
-                <Button.KeyboardAccelerators>
-                    <!-- Same guard as UndoButton's Ctrl+Z above. -->
-                    <KeyboardAccelerator Modifiers="Control" Key="Y" Invoked="OnUndoRedoAcceleratorInvoked"/>
-                    <KeyboardAccelerator Modifiers="Control,Shift" Key="Z" Invoked="OnUndoRedoAcceleratorInvoked"/>
-                </Button.KeyboardAccelerators>
-            </Button>
+                    AutomationProperties.Name="Redo"/>
 
             <AppBarSeparator/>
 
@@ -154,41 +164,33 @@
                  (UpdateStepButtonsEnabled) on an engine being loaded and the
                  current image sitting strictly between the sequence's first
                  and last entries — first frame disables Prev, last frame
-                 disables Next. PageUp/PageDown carry the same
-                 IsTextInputFocused guard as Ctrl+Z/Y/Shift+Z above
-                 (OnStepAcceleratorInvoked). -->
+                 disables Next.
+                 M3-A: PageUp/PageDown route through OnRootKeyDown →
+                 akapen_resolve_key → dispatch (AKAPEN_ACT_PREV/NEXT_FRAME),
+                 so no per-button KeyboardAccelerator here — same reasoning
+                 as the Undo/Redo buttons above. -->
             <Button x:Name="PrevButton"
                     Content="◀ Prev"
                     Click="OnPrevClick"
                     IsEnabled="False"
                     ToolTipService.ToolTip="Previous frame (Page Up)"
-                    AutomationProperties.Name="Previous frame">
-                <Button.KeyboardAccelerators>
-                    <KeyboardAccelerator Key="PageUp" Invoked="OnStepAcceleratorInvoked"/>
-                </Button.KeyboardAccelerators>
-            </Button>
+                    AutomationProperties.Name="Previous frame"/>
             <Button x:Name="NextButton"
                     Content="Next ▶"
                     Click="OnNextClick"
                     IsEnabled="False"
                     ToolTipService.ToolTip="Next frame (Page Down)"
-                    AutomationProperties.Name="Next frame">
-                <Button.KeyboardAccelerators>
-                    <KeyboardAccelerator Key="PageDown" Invoked="OnStepAcceleratorInvoked"/>
-                </Button.KeyboardAccelerators>
-            </Button>
+                    AutomationProperties.Name="Next frame"/>
 
             <AppBarSeparator/>
 
             <!-- M2-E (spec §4.7): 出力先モード・接尾辞・固定パスなどのユーザー設定
                  を編集する独立トップレベルウィンドウを開く。mac の
-                 SettingsView(Settings シーン、Cmd+, で開く)を写像。Ctrl+, は
-                 code-behind の RegisterGlobalAccelerators で登録している
-                 (VirtualKey.OemComma = 0xBC が Windows.System.VirtualKey に
-                 名前付きメンバとして存在しないため、Undo/Redo の PageUp と違い
-                 ここでは XAML 属性で書けない)。IsTextInputFocused ガードは M2-D
-                 と同じ運用で、Ctrl+, は Settings 起動という「モード切替」なので
-                 テキスト編集中は無効化して text-input の Ctrl+, を邪魔しない。 -->
+                 SettingsView(Settings シーン、Cmd+, で開く)を写像。M3-A で
+                 Ctrl+, は OnRootKeyDown 内の特別分岐(akapen_resolve_key に
+                 該当 ACT が無いため keymap 経由には載せない)で拾って
+                 EnsureSettingsWindow を叩く。IsTextInputFocused ガードは
+                 従来と同じ運用で、text-input が focus 中の Ctrl+, は素通り。 -->
             <Button x:Name="SettingsButton"
                     Content="Settings…"
                     Click="OnSettingsClick"

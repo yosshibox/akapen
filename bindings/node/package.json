@@ -1,7 +1,7 @@
 {
-  "name": "@akapen/core-node-ci",
+  "name": "@akapen/core-node",
   "version": "0.0.1",
-  "description": "CI-only napi-rs probe over crates/akapen-ffi. Not the M5 public package (spec §9).",
+  "description": "VEDA adapter preview for the Akapen drawing session API.",
   "private": true,
   "main": "index.js",
   "types": "index.d.ts",
@@ -15,7 +15,8 @@
   "license": "Apache-2.0",
   "scripts": {
     "build": "napi build --platform --release",
-    "build:debug": "napi build --platform"
+    "build:debug": "napi build --platform",
+    "smoke": "node scripts/native-smoke.js"
   },
   "devDependencies": {
     "@napi-rs/cli": "^2.18.4"

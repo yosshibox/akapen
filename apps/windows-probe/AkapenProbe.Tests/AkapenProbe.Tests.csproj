@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RollForward>LatestMajor</RollForward>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\AkapenProbe\Ui\UiContracts.cs" Link="UiContracts.cs" />
+    <Compile Include="..\AkapenProbe\Ui\UiSettings.cs" Link="UiSettings.cs" />
+    <Compile Include="..\AkapenProbe\Ui\DockLayout.cs" Link="DockLayout.cs" />
+    <Compile Include="..\AkapenProbe\Ui\SvgIconCatalog.cs" Link="SvgIconCatalog.cs" />
+    <Compile Include="..\AkapenProbe\Ui\SvgPathParser.cs" Link="SvgPathParser.cs" />
+    <Compile Include="..\AkapenProbe\Ui\UiContracts.Tests.cs" Link="UiContracts.Tests.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\..\assets\icons\akapen-ui-icons.svg" Link="Assets\akapen-ui-icons.svg" />
+  </ItemGroup>
+</Project>

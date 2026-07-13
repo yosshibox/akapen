@@ -444,6 +444,86 @@ mod tests {
         e.push_pointer(up(b.0, b.1, pr));
     }
 
+    #[derive(serde::Deserialize)]
+    struct GoldenExport {
+        canvas: GoldenCanvas,
+        commands: Vec<GoldenCommand>,
+        expected: GoldenExpected,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct GoldenCanvas {
+        width: u32,
+        height: u32,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct GoldenCommand {
+        x: f64,
+        y: f64,
+        pressure: f64,
+        kind: String,
+        phase: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct GoldenExpected {
+        schema: String,
+        natural_w: u32,
+        natural_h: u32,
+        stroke_count: usize,
+        kinds: Vec<String>,
+        points: Vec<Vec<crate::vector::VectorPoint>>,
+    }
+
+    #[test]
+    fn shared_golden_commands_produce_expected_export() {
+        let fixture: GoldenExport =
+            serde_json::from_str(include_str!("../../../testdata/golden-export-v1.json"))
+                .expect("golden fixture must be valid JSON");
+        let mut engine = Engine::new(fixture.canvas.width, fixture.canvas.height);
+        for command in fixture.commands {
+            assert_eq!(command.kind, "pen");
+            let phase = match command.phase.as_str() {
+                "down" => Phase::Down,
+                "move" => Phase::Move,
+                "up" => Phase::Up,
+                other => panic!("unknown golden phase: {other}"),
+            };
+            engine.push_pointer(PointerSample {
+                x: command.x,
+                y: command.y,
+                pressure: command.pressure,
+                kind: PointerKind::Pen,
+                phase,
+            });
+        }
+
+        let doc = engine.export().vector;
+        assert_eq!(doc.schema, fixture.expected.schema);
+        assert_eq!(
+            (doc.natural_w, doc.natural_h),
+            (fixture.expected.natural_w, fixture.expected.natural_h)
+        );
+        assert_eq!(doc.strokes.len(), fixture.expected.stroke_count);
+        assert_eq!(
+            doc.strokes
+                .iter()
+                .map(|stroke| stroke.kind.as_str())
+                .collect::<Vec<_>>(),
+            fixture
+                .expected
+                .kinds
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        );
+        for (actual, expected) in doc.strokes.iter().zip(fixture.expected.points) {
+            assert_eq!(actual.points, expected);
+            assert!(actual.points.iter().all(|point| point.p > 0.0));
+        }
+    }
+
     #[test]
     fn drawing_then_export_yields_three_artifacts() {
         let mut e = Engine::new(64, 64);

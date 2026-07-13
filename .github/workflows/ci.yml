@@ -57,10 +57,11 @@ jobs:
   # the same push. The three faces are:
   #   mac-shell       — Rust static lib + SwiftUI shell + headless harness.
   #   bindings-dotnet — Rust cdylib + csbindgen-generated C# + .NET class lib.
-  #   bindings-node   — napi-rs cdylib producing a loadable .node addon.
+  #   bindings-node   — napi-rs cdylib producing a loadable .node addon and
+  #                    exercising the native AkapenSession API.
   #
-  # None of the three ship product-level bindings yet (spec §9 M5 is when the
-  # public API stabilizes); the goal here is link+build coverage only.
+  # The Node face's smoke gate loads the platform addon, drives varying pointer
+  # pressure through AkapenSession, and verifies the three-file export.
 
   mac-shell:
     name: mac shell (swift + ffi)
@@ -125,9 +126,8 @@ jobs:
   # cannot present a XAML window on a headless runner. The build alone still
   # catches every regression the shell is meant to catch here: XAML markup /
   # code-behind mismatches, .csproj drift against the WindowsAppSDK NuGet
-  # package, and any accidental break of the internal Akapen.Native class
-  # library the shell references (a change that broke the friend-access
-  # InternalsVisibleTo would fail this job on the same push).
+  # package, and any accidental break of the shared generated binding source
+  # consumed by the shell and Akapen.Native.
   apps-windows-shell:
     name: apps / windows shell (WinUI 3)
     runs-on: windows-latest
@@ -178,9 +178,13 @@ jobs:
         run: dotnet run --project apps/windows/AkapenApp.Tests -c Release
 
   bindings-node:
-    name: bindings / node (napi-rs)
-    runs-on: ubuntu-latest
+    name: bindings / node (napi-rs, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     needs: header-parity
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -197,17 +201,10 @@ jobs:
       - name: Build the napi-rs addon (.node)
         run: npm run build
         working-directory: bindings/node
-      - name: Assert the .node binary exists
-        run: |
-          set -e
-          shopt -s nullglob
-          files=(bindings/node/*.node)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "napi build did not emit a .node binary" >&2
-            ls -la bindings/node
-            exit 1
-          fi
-          echo "produced: ${files[*]}"
-      - name: Load and call the addon (validates C ABI symbol resolution)
+      - name: Assert the platform .node binary exists
+        run: >-
+          node -e 'const fs = require("node:fs"); const tag = {darwin: "darwin", linux: "linux", win32: "win32"}[process.platform]; const suffix = process.platform === "linux" ? "-(?:gnu|musl)" : process.platform === "win32" ? "-msvc" : ""; const re = new RegExp("^akapen-core-node\\." + tag + "-" + process.arch + suffix + "\\.node$"); const files = fs.readdirSync(".").filter((name) => re.test(name)); if (!files.length) { console.error("napi build did not emit a platform .node binary"); console.error(fs.readdirSync(".").join("\\n")); process.exit(1); } console.log("produced: " + files.join(", "));'
         working-directory: bindings/node
-        run: node -e "const m = require('./'); const v = m.version(); if (!v) throw new Error('version() returned falsy'); const size = m.pingNewEngine(1024, 768); if (size[0] !== 1024 || size[1] !== 768) throw new Error('pingNewEngine returned ' + JSON.stringify(size)); const r = m.palmRoute(0, 0, 1000); if (r !== 'draw') throw new Error('palmRoute returned ' + r); const b = m.openBogusReturnsNull('/definitely/does/not/exist.png'); if (b !== true) throw new Error('openBogusReturnsNull returned ' + b); console.log('[smoke] version=' + v + ' size=' + JSON.stringify(size) + ' palm=' + r + ' bogus=' + b);"
+      - name: Run the native AkapenSession smoke test
+        working-directory: bindings/node
+        run: npm run smoke

@@ -9,24 +9,24 @@ flow to the next frame.
 提出された作画に赤で指示を描き込み、元画像を壊さず別名保存し、連番の次カットへ
 流れるように移動する。CLIP STUDIO PAINT の手癖がそのまま通じることを重視する。
 
-> **Status: pre-release skeleton (M0).** This repository is currently
-> **private**. It will be made public once the maintainer completes OSS launch
-> preparation.
-> **TODO(maintainer): switch this repository to public when ready** (license,
-> NOTICE, third-party attributions and contribution docs are in place; review
-> before flipping visibility).
+> **Status (2026-07-13): Windows版完成。** Windows版をAkapenの現行製品仕様・
+> Mac移植時のUX正本として凍結した。Macへの反映は別工程とし、現時点では着手しない。
+> 配布用の自己完結型インストーラーは `dist/AkapenSetup-win-x64.exe`。
+> 本リポジトリはprivate運用を継続する。
 
 ## Scope / スコープ
 
 Akapen does **review markup only** — it is not a drawing app. It does: open
 images, draw red (and a few colors) lines / arrows / shapes, erase your own
 unsaved strokes, save non-destructively under a new name in a separate
-directory, walk frame sequences, and capture native tablet pressure.
+directory, walk frame sequences, and use native tablet pressure when the
+platform API exposes it.
 It does **not** do: layers, fills, text typesetting, brush materials, filters,
 selection/transform, animation drawing, or `.clip` read/write.
 
-**Pen pressure is a hard requirement (MUST).** A build where pressure does not
-drive stroke width is not releasable. See the spec §5.
+**Pen pressure is best-effort.** Native APIs are used when they expose
+pressure; otherwise the shell may use a documented fallback pressure and
+surface a diagnostic warning. See the spec §5.
 
 ## Architecture / アーキテクチャ
 
@@ -34,7 +34,7 @@ Two layers: a UI-agnostic **Rust core** and thin **native OS shells**.
 
 ```
 ┌──────────────────────┐   ┌──────────────────────────┐
-│ mac shell (SwiftUI)  │   │ Windows shell (WinUI 3)  │
+│ mac shell (SwiftUI)  │   │ Windows shell (raw Win32) │
 │ NSEvent pen input    │   │ WM_POINTER / Wintab      │
 │ ImageIO decode       │   │ WIC decode, SwapChainPanel│
 └──────────┬───────────┘   └───────────┬──────────────┘
@@ -108,9 +108,10 @@ the Swift↔Rust boundary and the whole draw→bake→save pipeline without a GU
 
 ## Pressure / 筆圧
 
-Every stored point carries raw pressure `p` (0..=1, pre-smoothing). The vector
-JSON schema (`veda-annot-1`) rejects points without `p`. Pressure detection is
-verified on real WACOM hardware every release (spec §5.6).
+Every stored point carries a pressure value `p` (0..=1, pre-smoothing), using
+the native value when available and a documented fallback otherwise. The
+vector JSON schema (`veda-annot-1`) rejects points without `p`; this preserves
+cross-platform compatibility even when a device cannot report pressure.
 
 ## License
 

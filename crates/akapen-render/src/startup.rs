@@ -236,6 +236,7 @@ pub async fn run_headless_cold_start(
         &stroke_pipeline,
         None,
         &view,
+        wgpu::Color::WHITE,
     );
     let pixels = target.read_rgba(&renderer.device, &renderer.queue);
     trace

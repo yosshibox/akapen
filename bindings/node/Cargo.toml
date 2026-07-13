@@ -1,6 +1,6 @@
 [package]
 name = "akapen-node"
-description = "Node native addon (napi-rs) wrapping the Akapen C ABI. CI-only at M1 — proves the Node face of the tri-face build discipline (spec §9)."
+description = "Node native addon (napi-rs) VEDA adapter preview over the Akapen C ABI."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -22,6 +22,8 @@ napi-derive = "2"
 # but consumers should call the napi-decorated wrappers below — those are the
 # ones marked #[napi] and visible from JavaScript.
 akapen-ffi = { path = "../../crates/akapen-ffi" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [build-dependencies]
 # napi-build injects the linker flags Node needs on each platform (e.g. the

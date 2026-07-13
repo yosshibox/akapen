@@ -28,6 +28,10 @@ struct CanvasView: NSViewRepresentable {
     func updateNSView(_ nsView: CanvasNSView, context: Context) {
         nsView.state = state
         nsView.useGPU = state.useGPU
+        if let command = state.canvasCommand {
+            nsView.perform(command)
+            state.canvasCommand = nil
+        }
         // Re-read the composite (CPU) or redraw the frame (GPU) whenever the
         // revision changes.
         nsView.refresh()
@@ -63,6 +67,7 @@ final class CanvasNSView: NSView {
     // Space held → pan mode (spec §3 CSP: Space-drag pans). With Shift also
     // held, a Space drag rotates the canvas instead (spec §3.1).
     private var spaceDown = false
+    private var panTool = false
 
     // Palm rejection (spec §5.2): the core state machine that keeps a resting
     // hand off the ink path. Every classified pointer event is routed through it
@@ -334,13 +339,13 @@ final class CanvasNSView: NSView {
         // this, a click here would draw but leave keyboard focus stuck on the
         // previous responder and shortcuts would silently stop firing.
         window?.makeFirstResponder(self)
-        if spaceDown { return } // pan gesture; ignore drawing
+        if spaceDown || panTool { return } // pan gesture; ignore drawing
         state?.applyToolState()
         send(event, phase: .down)
     }
 
     override func mouseDragged(with event: NSEvent) {
-        if spaceDown {
+        if spaceDown || panTool {
             // Shift+Space drag rotates; plain Space drag pans (spec §3.1).
             if event.modifierFlags.contains(.shift) {
                 rotate(by: event.deltaX * 0.5)
@@ -356,7 +361,7 @@ final class CanvasNSView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        if spaceDown { return }
+        if spaceDown || panTool { return }
         send(event, phase: .up)
     }
 
@@ -405,6 +410,19 @@ final class CanvasNSView: NSView {
         rotationDeg += deg
         needsDisplay = true
         renderGPU()
+    }
+
+    func perform(_ command: CanvasCommand) {
+        switch command {
+        case .draw: panTool = false
+        case .pan: panTool = true
+        case .zoomIn: zoomBy(1.25)
+        case .zoomOut: zoomBy(1.0 / 1.25)
+        case .rotateLeft: rotate(by: -15)
+        case .rotateRight: rotate(by: 15)
+        case .fit: fitToWindow()
+        case .actualSize: setActualSize()
+        }
     }
 
     // MARK: keymap (spec §3)
@@ -511,9 +529,9 @@ final class CanvasNSView: NSView {
         case Int32(AKAPEN_ACT_ROTATE_RIGHT):
             rotate(by: 15)
         case Int32(AKAPEN_ACT_BRUSH_SMALLER):
-            adjustBrush(-2)
+            adjustBrush(-1)
         case Int32(AKAPEN_ACT_BRUSH_LARGER):
-            adjustBrush(2)
+            adjustBrush(1)
         case Int32(AKAPEN_ACT_NEXT_FRAME):
             state.step(forward: true)
         case Int32(AKAPEN_ACT_PREV_FRAME):
@@ -543,7 +561,7 @@ final class CanvasNSView: NSView {
 
     private func adjustBrush(_ delta: Double) {
         guard let state else { return }
-        state.brushSize = max(1, min(80, state.brushSize + delta))
+        state.brushSize = max(1, min(50, state.brushSize + delta))
         state.applyToolState()
     }
 }

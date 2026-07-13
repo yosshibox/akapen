@@ -45,6 +45,7 @@ pub struct AkapenEngine {
     inner: Engine,
     gpu: Option<GpuCanvas>,
     pending: BakeDelta,
+    previewed_live_eraser: bool,
     /// The `Display` text of the most recent `akapen_render_attach` failure,
     /// if any (cleared on a successful attach). `akapen_render_attach` only
     /// returns an opaque code (1-4) across the C ABI — code 4 alone collapses
@@ -170,6 +171,7 @@ pub unsafe extern "C" fn akapen_open_image(path: *const c_char) -> *mut AkapenEn
                 inner: engine,
                 gpu: None,
                 pending: BakeDelta::None,
+                previewed_live_eraser: false,
                 last_attach_error: None,
                 naming: OutputNaming::default(),
             }))
@@ -188,6 +190,7 @@ pub extern "C" fn akapen_new(width: u32, height: u32) -> *mut AkapenEngine {
         inner: Engine::new(width, height),
         gpu: None,
         pending: BakeDelta::None,
+        previewed_live_eraser: false,
         last_attach_error: None,
         naming: OutputNaming::default(),
     }))
@@ -362,6 +365,26 @@ pub unsafe extern "C" fn akapen_redo(engine: *mut AkapenEngine) {
     if let Some(e) = as_engine(engine) {
         let delta = e.inner.redo();
         e.pending = accumulate_bake_delta(e.pending, delta);
+    }
+}
+
+/// Returns 1 when the engine has a committed stroke available to undo, and 0
+/// otherwise. A null engine is treated as having no history.
+#[no_mangle]
+pub unsafe extern "C" fn akapen_can_undo(engine: *mut AkapenEngine) -> c_int {
+    match as_engine(engine) {
+        Some(e) if e.inner.can_undo() => 1,
+        _ => 0,
+    }
+}
+
+/// Returns 1 when the engine has an undone stroke available to redo, and 0
+/// otherwise. A null engine is treated as having no history.
+#[no_mangle]
+pub unsafe extern "C" fn akapen_can_redo(engine: *mut AkapenEngine) -> c_int {
+    match as_engine(engine) {
+        Some(e) if e.inner.can_redo() => 1,
+        _ => 0,
     }
 }
 
@@ -551,6 +574,85 @@ pub unsafe extern "C" fn akapen_render_attach(
     }
 }
 
+/// Consumes a decoded replacement engine and installs its document into the
+/// active engine while preserving the active GPU surface/device/pipelines.
+/// This is the fast path for frame-sequence navigation.
+///
+/// Returns 0 on success, 1 for a null active engine, 2 for a null replacement,
+/// and 3 when both pointers are identical. On success `replacement` is
+/// consumed and must not be freed by the caller.
+#[no_mangle]
+pub unsafe extern "C" fn akapen_replace_document(
+    active: *mut AkapenEngine,
+    replacement: *mut AkapenEngine,
+) -> c_int {
+    let Some(active) = as_engine(active) else {
+        return 1;
+    };
+    if replacement.is_null() {
+        return 2;
+    }
+    if std::ptr::eq(active as *mut AkapenEngine, replacement) {
+        return 3;
+    }
+
+    let replacement = *Box::from_raw(replacement);
+    if let Some(canvas) = active.gpu.as_mut() {
+        let bg = replacement.inner.background();
+        canvas.replace_document(
+            &bg.data,
+            bg.width,
+            bg.height,
+            replacement.inner.committed_strokes(),
+        );
+    }
+    active.inner = replacement.inner;
+    active.pending = BakeDelta::None;
+    active.previewed_live_eraser = false;
+    active.last_attach_error = None;
+    active.naming = replacement.naming;
+    0
+}
+
+/// Exchanges the active document with a decoded/cache engine while keeping
+/// the active engine's GPU surface alive. After success, `standby` contains
+/// the document that was active before the call, so a frame-sequence shell
+/// can cache it and return to its exact in-session annotation state.
+#[no_mangle]
+pub unsafe extern "C" fn akapen_swap_document(
+    active: *mut AkapenEngine,
+    standby: *mut AkapenEngine,
+) -> c_int {
+    let Some(active) = as_engine(active) else {
+        return 1;
+    };
+    let Some(standby) = as_engine(standby) else {
+        return 2;
+    };
+    if std::ptr::eq(active as *mut AkapenEngine, standby as *mut AkapenEngine) {
+        return 3;
+    }
+
+    if let Some(canvas) = active.gpu.as_mut() {
+        let bg = standby.inner.background();
+        canvas.replace_document(
+            &bg.data,
+            bg.width,
+            bg.height,
+            standby.inner.committed_strokes(),
+        );
+    }
+    std::mem::swap(&mut active.inner, &mut standby.inner);
+    std::mem::swap(&mut active.naming, &mut standby.naming);
+    active.pending = BakeDelta::None;
+    standby.pending = BakeDelta::None;
+    active.previewed_live_eraser = false;
+    standby.previewed_live_eraser = false;
+    active.last_attach_error = None;
+    standby.last_attach_error = None;
+    0
+}
+
 /// Writes a short NUL-terminated ASCII message describing why the most
 /// recent [`akapen_render_attach`] call failed (e.g.
 /// `"failed to create surface: ..."`), so a caller bringing up a new
@@ -607,6 +709,15 @@ pub unsafe extern "C" fn akapen_render_resize(
     }
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn akapen_set_canvas_dark(engine: *mut AkapenEngine, dark: c_int) {
+    if let Some(e) = as_engine(engine) {
+        if let Some(canvas) = e.gpu.as_mut() {
+            canvas.set_dark_backdrop(dark != 0);
+        }
+    }
+}
+
 /// Draws one on-screen frame through the given view transform. Bakes any
 /// committed-stroke changes accumulated since the last frame, composites
 /// (background → baked strokes → in-progress "wet" stroke), and presents.
@@ -630,8 +741,33 @@ pub unsafe extern "C" fn akapen_render_frame(engine: *mut AkapenEngine, view: Ak
     let (bw, bh) = gpu.buffer_size();
     let vt = to_view_transform(view, bw, bh);
     // `e.gpu` and `e.inner` are disjoint fields, so these borrows don't alias.
-    gpu.apply_bake(delta, e.inner.committed_strokes());
-    gpu.render(e.inner.current_stroke(), &vt);
+    let live_eraser = e
+        .inner
+        .current_stroke()
+        .map(|stroke| {
+            stroke.stroke.tool == akapen_core::stroke::Tool::Eraser || stroke.stroke.erase
+        })
+        .unwrap_or(false);
+    if live_eraser {
+        // Rebuild the stable layer, then apply the current eraser stroke to
+        // the offscreen ink texture. This previews erasing immediately while
+        // keeping the entire drag as one undoable committed stroke.
+        gpu.apply_bake(BakeDelta::Rebuild, e.inner.committed_strokes());
+        if let Some(wet) = e.inner.current_stroke() {
+            gpu.apply_bake(BakeDelta::Append, std::iter::once(wet));
+        }
+        e.previewed_live_eraser = true;
+        gpu.render(None, &vt);
+    } else {
+        let effective = if e.previewed_live_eraser {
+            BakeDelta::Rebuild
+        } else {
+            delta
+        };
+        e.previewed_live_eraser = false;
+        gpu.apply_bake(effective, e.inner.committed_strokes());
+        gpu.render(e.inner.current_stroke(), &vt);
+    }
 }
 
 /// Detaches and tears down the GPU surface (releasing the swapchain and its
@@ -935,7 +1071,97 @@ pub unsafe extern "C" fn akapen_palm_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use akapen_core::VectorDoc;
     use std::ffi::CString;
+
+    #[derive(serde::Deserialize)]
+    struct GoldenFixture {
+        canvas: GoldenCanvas,
+        commands: Vec<GoldenCommand>,
+        expected: GoldenExpected,
+    }
+    #[derive(serde::Deserialize)]
+    struct GoldenCanvas {
+        width: u32,
+        height: u32,
+    }
+    #[derive(serde::Deserialize)]
+    struct GoldenCommand {
+        x: f64,
+        y: f64,
+        pressure: f64,
+        kind: String,
+        phase: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct GoldenExpected {
+        schema: String,
+        natural_w: u32,
+        natural_h: u32,
+        stroke_count: usize,
+        artifacts: Vec<String>,
+    }
+
+    fn golden_fixture() -> GoldenFixture {
+        let fixture: GoldenFixture =
+            serde_json::from_str(include_str!("../../../testdata/golden-export-v1.json"))
+                .expect("golden fixture must be valid JSON");
+        // The fixture intentionally uses readable names; these numeric values
+        // are the portable ABI enum codes sent by every consumer.
+        for command in &fixture.commands {
+            assert_eq!(command.kind, "pen");
+        }
+        fixture
+    }
+
+    #[test]
+    fn shared_golden_ffi_export_has_contract_and_three_artifacts() {
+        let fixture = golden_fixture();
+        let e = akapen_new(fixture.canvas.width, fixture.canvas.height);
+        assert!(!e.is_null());
+        unsafe {
+            for command in fixture.commands {
+                akapen_pointer(
+                    e,
+                    command.x,
+                    command.y,
+                    command.pressure,
+                    0,
+                    match command.phase.as_str() {
+                        "down" => 0,
+                        "move" => 1,
+                        "up" => 2,
+                        other => panic!("unknown golden phase: {other}"),
+                    },
+                );
+            }
+            let dir =
+                std::env::temp_dir().join(format!("akapen-ffi-golden-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let cdir = CString::new(dir.to_str().unwrap()).unwrap();
+            let cstem = CString::new("golden").unwrap();
+            assert_eq!(akapen_export_to_dir(e, cdir.as_ptr(), cstem.as_ptr()), 0);
+            for artifact in &fixture.expected.artifacts {
+                assert!(dir.join(artifact).is_file(), "missing {artifact}");
+            }
+            let json = std::fs::read_to_string(dir.join("golden.strokes.json")).unwrap();
+            let doc = VectorDoc::from_json(&json).unwrap();
+            assert_eq!(doc.schema, fixture.expected.schema);
+            assert_eq!(
+                (doc.natural_w, doc.natural_h),
+                (fixture.expected.natural_w, fixture.expected.natural_h)
+            );
+            assert_eq!(doc.strokes.len(), fixture.expected.stroke_count);
+            assert!(doc.strokes.iter().all(|stroke| stroke.kind == "pen"));
+            assert!(doc
+                .strokes
+                .iter()
+                .flat_map(|stroke| stroke.points.iter())
+                .all(|point| point.p.is_finite()));
+            let _ = std::fs::remove_dir_all(&dir);
+            akapen_free(e);
+        }
+    }
 
     #[test]
     fn ffi_draw_and_export_roundtrip() {
@@ -1029,9 +1255,84 @@ mod tests {
         unsafe {
             akapen_free(std::ptr::null_mut());
             akapen_undo(std::ptr::null_mut());
+            assert_eq!(akapen_can_undo(std::ptr::null_mut()), 0);
+            assert_eq!(akapen_can_redo(std::ptr::null_mut()), 0);
             assert_eq!(akapen_pressure_stuck(std::ptr::null_mut()), 0);
             // The §4.7 setter also tolerates a null handle without crashing.
             akapen_set_output_naming(std::ptr::null_mut(), std::ptr::null(), std::ptr::null());
+        }
+    }
+
+    #[test]
+    fn replace_document_consumes_replacement_and_preserves_active_handle() {
+        unsafe {
+            let active = akapen_new(16, 12);
+            let replacement = akapen_new(64, 48);
+            assert!(!active.is_null() && !replacement.is_null());
+            assert_eq!(akapen_replace_document(active, replacement), 0);
+            let mut width = 0;
+            let mut height = 0;
+            akapen_size(active, &mut width, &mut height);
+            assert_eq!((width, height), (64, 48));
+            akapen_free(active);
+        }
+    }
+
+    #[test]
+    fn swap_document_keeps_both_documents_for_exact_frame_revisit() {
+        unsafe {
+            let active = akapen_new(16, 12);
+            let standby = akapen_new(64, 48);
+            akapen_pointer(active, 2.0, 2.0, 1.0, 0, 0);
+            akapen_pointer(active, 8.0, 8.0, 1.0, 0, 2);
+            assert_eq!(akapen_can_undo(active), 1);
+            assert_eq!(akapen_swap_document(active, standby), 0);
+            assert_eq!(akapen_can_undo(active), 0);
+            assert_eq!(akapen_can_undo(standby), 1);
+            let mut width = 0;
+            let mut height = 0;
+            akapen_size(active, &mut width, &mut height);
+            assert_eq!((width, height), (64, 48));
+            akapen_size(standby, &mut width, &mut height);
+            assert_eq!((width, height), (16, 12));
+            assert_eq!(akapen_swap_document(active, standby), 0);
+            assert_eq!(
+                akapen_can_undo(active),
+                1,
+                "history survives a complete frame round trip"
+            );
+            akapen_undo(active);
+            assert_eq!(akapen_can_undo(active), 0);
+            assert_eq!(akapen_can_redo(active), 1);
+            akapen_redo(active);
+            assert_eq!(akapen_can_undo(active), 1);
+            assert_eq!(akapen_can_redo(active), 0);
+            akapen_free(active);
+            akapen_free(standby);
+        }
+    }
+
+    #[test]
+    fn history_queries_follow_undo_and_redo() {
+        let e = akapen_new(32, 32);
+        assert!(!e.is_null());
+        unsafe {
+            assert_eq!(akapen_can_undo(e), 0);
+            assert_eq!(akapen_can_redo(e), 0);
+
+            akapen_pointer(e, 4.0, 4.0, 1.0, 0, 0);
+            akapen_pointer(e, 28.0, 28.0, 1.0, 0, 2);
+            assert_eq!(akapen_can_undo(e), 1);
+            assert_eq!(akapen_can_redo(e), 0);
+
+            akapen_undo(e);
+            assert_eq!(akapen_can_undo(e), 0);
+            assert_eq!(akapen_can_redo(e), 1);
+
+            akapen_redo(e);
+            assert_eq!(akapen_can_undo(e), 1);
+            assert_eq!(akapen_can_redo(e), 0);
+            akapen_free(e);
         }
     }
 

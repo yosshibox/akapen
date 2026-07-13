@@ -17,7 +17,20 @@ public partial class App : Application
     public App()
     {
         // Registers the default XAML controls resources declared in App.xaml.
-        this.InitializeComponent();
+        try
+        {
+            this.InitializeComponent();
+        }
+        catch (Exception ex)
+        {
+            string logPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Akapen",
+                "startup-error.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+            File.WriteAllText(logPath, "App.InitializeComponent failed\n" + ex);
+            throw;
+        }
     }
 
     /// <summary>

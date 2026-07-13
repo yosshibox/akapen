@@ -41,6 +41,8 @@ dependencies = [
  "akapen-io",
  "akapen-render",
  "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -58,6 +60,8 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

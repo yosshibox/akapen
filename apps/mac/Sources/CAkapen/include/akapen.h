@@ -64,6 +64,10 @@ void akapen_pointer(AkapenEngine *engine, double x, double y, double pressure,
 /* History. */
 void akapen_undo(AkapenEngine *engine);
 void akapen_redo(AkapenEngine *engine);
+/* Returns 1 when an undo/redo history entry is available, otherwise 0.
+ * A NULL engine returns 0. */
+int akapen_can_undo(AkapenEngine *engine);
+int akapen_can_redo(AkapenEngine *engine);
 
 /* Returns 1 if the last pen stroke had no pressure variation (spec §5.4). */
 int akapen_pressure_stuck(AkapenEngine *engine);

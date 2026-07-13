@@ -257,6 +257,7 @@ pub fn composite_frame(
     stroke_pipeline: &StrokePipeline,
     wet: Option<CommittedStrokeRef<'_>>,
     view: &ViewTransform,
+    backdrop: wgpu::Color,
 ) {
     let background_draw = background_pipeline.prepare_texture_draw(
         device,
@@ -305,7 +306,7 @@ pub fn composite_frame(
                     // Background is the bottom-most layer — nothing to
                     // preserve underneath yet, matching
                     // `BackgroundPipeline::render`'s own always-clear.
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    load: wgpu::LoadOp::Clear(backdrop),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -514,6 +515,7 @@ mod tests {
             &stroke_pipeline,
             None,
             &view,
+            wgpu::Color::WHITE,
         );
         let gpu = target.read_rgba(device, queue);
 
@@ -613,6 +615,7 @@ mod tests {
             &stroke_pipeline,
             engine.current_stroke(),
             &view,
+            wgpu::Color::WHITE,
         );
         let gpu = target.read_rgba(device, queue);
         let gpu_pixel = |x: u32, y: u32| -> [u8; 4] {

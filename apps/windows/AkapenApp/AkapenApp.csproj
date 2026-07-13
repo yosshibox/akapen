@@ -19,6 +19,7 @@
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <RootNamespace>AkapenApp</RootNamespace>
     <AssemblyName>AkapenApp</AssemblyName>
+    <DefaultLanguage>en-US</DefaultLanguage>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -32,6 +33,7 @@
       chapter (see README).
     -->
     <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>true</EnableMsixTooling>
     <WindowsPackageType>None</WindowsPackageType>
     <UseWindowsForms>false</UseWindowsForms>
 
@@ -64,13 +66,14 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!--
-      Deployed as self-contained so `dotnet build` output can run on a Surface
-      Go without a pre-installed Windows App Runtime. Not required for CI, but
-      it also removes the "which WinAppRuntime is on the box" variable from
-      the first run.
+      Use the installed Windows App Runtime for the unpackaged MVP. The
+      self-contained WindowsAppSDK 1.8 payload reproducibly fails during
+      Microsoft.UI.Xaml initialization on the target Windows 10 host
+      (0xc000027b / 0x802b000a), while framework-dependent publication starts
+      successfully. The runtime is a normal prerequisite for this MVP.
     -->
-    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
-    <SelfContained>true</SelfContained>
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+    <SelfContained>false</SelfContained>
 
     <!--
       Prerequisite note (readers coming from the README): WinUI 3's
@@ -129,20 +132,17 @@
 
   <ItemGroup>
     <!--
-      Reuse the csbindgen-generated internal `NativeMethods` /
-      `AkapenSurfaceDesc` / `AkapenViewTransform` from the class library — the
-      same class library the Akapen.SmokeTest CI job builds against. That is
-      the "one C ABI, one binding face" invariant: the shell does *not* hand-
-      roll a second copy of the P/Invoke surface (`apps/windows-probe` did, on
-      purpose, because it was a throwaway spike — see its README).
-
-      `NativeMethods` is `internal`, so this project is granted friend access
-      via `[InternalsVisibleTo("AkapenApp")]` in
-      ../../bindings/dotnet/Akapen.Native/AssemblyInfo.cs (same shape as
-      Akapen.SmokeTest — see there for why the internal-only surface at M1/M2
-      is a deliberate choice).
+      Compile the single csbindgen output file directly into the WinUI shell.
+      The file is still generated once from the Rust C ABI and is shared with
+      bindings/dotnet/Akapen.Native and Akapen.SmokeTest. A ProjectReference
+      to the plain net8.0 class library makes WinUI's XAML compiler attempt to
+      resolve that managed assembly as Windows metadata (WMC1006 on a real
+      Windows SDK), even though the C# compiler can resolve it normally.
+      Linking the generated source preserves one binding source of truth and
+      avoids that XAML-only reference-resolution failure.
     -->
-    <ProjectReference Include="..\..\..\bindings\dotnet\Akapen.Native\Akapen.Native.csproj" />
+    <Compile Include="..\..\..\bindings\dotnet\Akapen.Native\Generated\NativeMethods.g.cs"
+             Link="NativeMethods.g.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -8,7 +8,7 @@
 | M | 判定 | 到達条件との比較 | 根拠 |
 |---|---|---|---|
 | M0 コア基盤 | 部分 | Rust コア、座標変換、平滑化、筆圧付きストローク、GPU 描画、JSON スキーマはある。一方、仕様が要求するキー写像、移植元 `lib/annotate-*` のテストベクタ移植、WinUI 3 実ホストでの1ストローク＋レイテンシ実測は確認できない。 | `crates/akapen-core/src/coord.rs`、`smoothing.rs`、`tessellate.rs`、`vector.rs`、`crates/akapen-render/src/canvas.rs`、`surface.rs`、`docs/開発日誌.md` |
-| M1 mac MVP | 部分 | mac SwiftUI/AppKit シェル、画像読込、ペン、消しゴム、パン、ホイール／ピンチズーム、undo/redo、3点セット保存、前後移動、GPU表示経路まである。しかし回転は内部メソッドのみでUI／キーから到達不能、主要ショートカットは未実装、実機WACOM筆圧・パームリジェクション・4K性能は未検証。筆圧実機ゲート未通過のため、仕様上は未完成。 | `apps/mac/Sources/AkapenApp/AppState.swift`、`CanvasView.swift`、`ContentView.swift`、`AkapenKit/AkapenEngine.swift`、`crates/akapen-ffi/src/lib.rs` |
+| M1 mac MVP | 後続写像へ | mac SwiftUI/AppKit シェル、画像読込、ペン、消しゴム、パン、ホイール／ピンチズーム、undo/redo、3点セット保存、前後移動、GPU表示経路まである。今後は Windows 先行開発を優先し、Mac は共通コア/API への写像として進める。筆圧は取得可能な API を使い、未取得時は警告付き固定圧へフォールバックする。 | `apps/mac/Sources/AkapenApp/AppState.swift`、`CanvasView.swift`、`ContentView.swift`、`AkapenKit/AkapenEngine.swift`、`crates/akapen-ffi/src/lib.rs` |
 | M2 Windows 写像 | 未着手 | Windows向け `SwapChainPanel` サーフェス生成コードとDX12実機ビルド／ヘッドレスGPUテストの記録はあるが、WinUI 3/.NET 8 シェル、WM_POINTER、Wintab、実アプリとしての入力・保存・M1同等機能はない。 | `crates/akapen-render/src/surface.rs`、`renderer.rs`、`docs/開発日誌.md` |
 | M3 CSP互換完成 | 未着手 | コアには平滑化、圧力カーブ、図形用 `Tool` 列挙値があるが、キー表全実装、サイズプリセット、不透明度UI、メイン／サブ／透明色、スポイト、IME・配列・フォーカス回帰試験は未確認。 | `crates/akapen-core/src/brush.rs`、`smoothing.rs`、`stroke.rs`、`apps/mac/Sources/AkapenApp/CanvasView.swift` |
 | M4 広形式＋動画フレーム | 未着手 | bmp は既に読込対象、JSONには任意の `timecode` フィールドがある。しかし PSD、HEIC、TIFF、ffmpeg抽出、フィルムストリップ、未処理ジャンプ、tilt活用はない。圧力カーブは soft/normal/hard の選択UIのみ。 | `crates/akapen-io/src/decode.rs`、`crates/akapen-core/src/vector.rs`、`apps/mac/Sources/AkapenApp/ContentView.swift` |
@@ -44,7 +44,7 @@
 ## §5 ペン入力の状態
 
 - 筆圧配線あり: `CanvasNSView.pressure(from:)` が `.tabletPoint` 時のみ `NSEvent.pressure` を採用 → `akapen_pointer` → `PointerSample.pressure`。幅反映(`PressureCurve`/`Brush::width_for`/tessellate/GPU圧力幅テスト)あり。JSONは各点 `p` 必須。
-- **実機検証は保留(液タブ未入手)。「筆圧が線幅に反映される」M1リリースゲートは未通過。**
+- **実機検証は品質工程として保留(液タブ未入手)。** 筆圧は取得可能な API の範囲で利用し、取得不能時は警告付き固定圧へフォールバックする。実機の強弱・カーブ確認は Windows 基本機能成立後に行う。
 - パームリジェクションは限定的: コアは `Touch` を無視するが、macシェルにタッチ明示送出・ペン接触中のタッチ抑止・ペン優先ロックが無い。§5.2適合は部分。
 - §5.4 異常検知は実装済(`pressure_stuck_warning`)。ただし**警告文言がmac版なのに "Windows Ink" を案内=不整合**。`ContentView.swift`
 
@@ -60,13 +60,13 @@
 | 6 | M1併走条件のCI(csbindgen/napi-rs 三面ビルド) | `.github/workflows/*`、`akapen-ffi/Cargo.toml` | Swift/.NET/Node 生成・ビルドが継続実行。後二者は未確認。 |
 | 7 | 保存・連番・GPU表示のmac実アプリ操作試験を記録 | `apps/mac/Sources/AkapenApp/*`、検証文書 | 開く→描く→保存→次前→自動保存→成果物確認をGUIで通し、3成果物・衝突連番・元画像非改変を確認。 |
 
-### ハードウェア待ちの保留項目：筆圧実機ゲート（液タブ未入手のため保留）
+### 品質工程としての保留項目：筆圧実機チューニング（液タブ未入手のため保留）
 
 対象: `CanvasView.swift`、`brush.rs`、`engine.rs`、`vector.rs`。受け入れ基準: 弱→強→弱の1ストロークでJSON `points[].p` に有意な分散と単調増減／画面・保存PNGで細→太→細が目視／soft・normal・hardで幅プロファイルが変わる／手のひらで誤描画しない／mac WACOM・液タブを必須セルに(Windows Ink on/off・板タブ・Surface Go は M2 マトリクス)。
 
 ## 所見（リスク・未整合）
 
-- 最大の未整合: M1絶対条件の実機筆圧ゲートが未通過(§5.0「筆圧が線幅に反映されないビルドはリリース不可」)。→ 液タブ入手まで M1 リリース不可。
+- 筆圧は取得可能な API を利用する方針へ変更。実機での強弱・カーブ・ドライバ差の確認は品質工程として保留するが、未検証だけを理由に Windows 開発を止めない。
 - §3は「コアの純関数にキー写像を置く」と定めるが、該当モジュールと参照実装ベクタ移植が未確認。現状キー処理は Space のみ。M0・M3双方に不足。
 - 回転は `rotate(by:)` があるが呼出経路が無く部分実装。
 - パームリジェクションはコアのTouch無視だけでは §5.2 を満たさない。mac入力層の種別判定・ペン優先ロックが要る。

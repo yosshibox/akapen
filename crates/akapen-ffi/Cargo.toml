@@ -25,3 +25,5 @@ akapen-render = { path = "../akapen-render" }
 # same version) — no new external crate here, just visible to this crate
 # too, for akapen_enable_diagnostic_logging (see lib.rs).
 log = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }

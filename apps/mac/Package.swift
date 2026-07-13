@@ -29,6 +29,8 @@ let package = Package(
     name: "Akapen",
     platforms: [.macOS(.v12)],
     targets: [
+        .target(name: "AkapenUIContract"),
+
         // C ABI surface (hand-written header kept in sync with crates/akapen-ffi).
         .target(name: "CAkapen"),
 
@@ -38,7 +40,7 @@ let package = Package(
         // The SwiftUI editor app (the real shell). Run with `swift run AkapenApp`.
         .executableTarget(
             name: "AkapenApp",
-            dependencies: ["AkapenKit", "CAkapen"],
+            dependencies: ["AkapenKit", "CAkapen", "AkapenUIContract"],
             linkerSettings: linkRust
         ),
 
@@ -49,6 +51,11 @@ let package = Package(
             name: "akapen-harness",
             dependencies: ["AkapenKit"],
             linkerSettings: linkRust
+        ),
+
+        .testTarget(
+            name: "AkapenUIContractTests",
+            dependencies: ["AkapenUIContract"]
         ),
     ]
 )

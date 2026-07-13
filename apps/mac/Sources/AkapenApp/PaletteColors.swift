@@ -33,7 +33,7 @@ enum AkapenPalette {
         PaletteColor(name: "緑", hex: "#22B14C"),
         PaletteColor(name: "ターコイズ", hex: "#00A2E8"),
         PaletteColor(name: "インディゴ", hex: "#3F48CC"),
-        PaletteColor(name: "紫", hex: "#A349A4"),
+        PaletteColor(name: "白", hex: "#FFFFFF"),
     ]
 
     /// 既定選択色(赤)。
@@ -50,6 +50,14 @@ extension Color {
         let r = Double((value & 0xFF0000) >> 16) / 255
         let g = Double((value & 0x00FF00) >> 8) / 255
         let b = Double(value & 0x0000FF) / 255
-        self.init(.sRGB, red: r, green: g, blue: b, opacity: 1)
+        let a = s.count == 8 ? Double(value & 0xFF) / 255 : 1
+        self.init(.sRGB, red: r, green: g, blue: b, opacity: a)
+    }
+
+    static func isValidHex(_ hex: String) -> Bool {
+        var value = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("#") { value.removeFirst() }
+        guard value.count == 6 || value.count == 8 else { return false }
+        return value.allSatisfy { $0.isHexDigit }
     }
 }

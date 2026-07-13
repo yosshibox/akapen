@@ -5,6 +5,14 @@
 // on macOS without needing a GUI or a tablet. The interactive pressure
 // acceptance gate (spec §5.6) is a separate manual test on real WACOM hardware.
 //
+// Cross-platform golden check: use the same commands in
+// `testdata/golden-export-v1.json` (64x48, two pen strokes with varying
+// pressure) in a harness run, then compare the parsed `.strokes.json` schema,
+// natural size, stroke/kind count, and every `points[].p` with the Rust and
+// Node smoke tests. Also require `.review.png`, `.strokes.png`, and
+// `.strokes.json`; do not compare platform UI pixels or reimplement export in
+// Swift. Rust's export is the canonical result.
+//
 // Usage:
 //   swift run akapen-harness [outputDir]
 // Writes <outputDir>/harness.review.png (flat), .strokes.png and .strokes.json,

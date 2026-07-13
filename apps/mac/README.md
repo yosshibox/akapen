@@ -11,6 +11,16 @@ A thin layer over the Rust core (spec §7.1); no business logic here.
 - `Sources/AkapenApp` — the SwiftUI editor: open (⌘O / drag-drop), draw with
   NSEvent tablet pressure, erase, zoom/pan/rotate, undo/redo, save the 3-file
   set to `<input folder>/_review/` (⌘S), step ◀ / ▶ through the sequence.
+- No-argument startup shows only a folder chooser and image drop target.
+  Canvas/Metal and the lightweight bottom dock appear only after an image is
+  loaded. The dock contains Pen/Eraser, ten circular colors in one row, and a
+  compact 1–50 px size knob; document/history/zoom actions stay in native
+  menus, shortcuts, and gestures.
+- `Sources/AkapenUIContract` and its tests define the shared
+  empty/loading/loaded, palette, size-control, and no-transition contract that
+  the raw Win32 shell mirrors.
+- Rendering uses the CPU composite for correctness, with an optional Metal/wgpu
+  GPU surface for on-screen rendering when attached successfully.
 - `Sources/akapen-harness` — headless proof: drives the FFI to draw
   pressure-varying strokes and write the 3-file export (used by CI and for
   verifying the boundary without a GUI).
@@ -35,7 +45,5 @@ each release.
 
 ## Not yet (deferred past M1)
 
-- Metal/wgpu draw surface (spec §7.1 / §6.2): M1 renders the CPU composite for
-  correctness first; the wgpu path is a later phase.
 - Full CSP shortcut table, size presets, main/sub/transparent color, eyedropper
   (spec M3).

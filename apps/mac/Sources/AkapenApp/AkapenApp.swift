@@ -20,6 +20,19 @@ struct AkapenApp: App {
                 Button("Open…") { openPanel() }
                     .keyboardShortcut("o", modifiers: .command)
             }
+            CommandGroup(replacing: .saveItem) {
+                Button("保存") { _ = state.save() }
+                    .keyboardShortcut("s", modifiers: .command)
+                    .disabled(state.engine == nil)
+            }
+            CommandGroup(replacing: .undoRedo) {
+                Button("取り消す") { state.undo() }
+                    .keyboardShortcut("z", modifiers: .command)
+                    .disabled(!state.canUndo)
+                Button("やり直す") { state.redo() }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .disabled(!state.canRedo)
+            }
         }
 
         // §4.7: 設定ウィンドウ。macOS 標準の Cmd+, で開く。

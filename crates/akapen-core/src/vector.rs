@@ -81,6 +81,69 @@ impl VectorDoc {
 mod tests {
     use super::*;
 
+    #[derive(Debug, Deserialize)]
+    struct GoldenFixture {
+        canvas: GoldenCanvas,
+        expected: GoldenExpected,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct GoldenCanvas {
+        width: u32,
+        height: u32,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct GoldenExpected {
+        schema: String,
+        natural_w: u32,
+        natural_h: u32,
+        stroke_count: usize,
+        kinds: Vec<String>,
+        points: Vec<Vec<VectorPoint>>,
+    }
+
+    #[test]
+    fn shared_golden_export_contract_matches_vector_schema() {
+        let fixture: GoldenFixture =
+            serde_json::from_str(include_str!("../../../testdata/golden-export-v1.json"))
+                .expect("golden fixture must be valid JSON");
+        assert_eq!((fixture.canvas.width, fixture.canvas.height), (64, 48));
+
+        // This verifier intentionally checks the schema shape only. The
+        // engine/export test applies the portable commands and supplies the
+        // resulting VectorDoc below.
+        let mut doc = VectorDoc::new(fixture.canvas.width, fixture.canvas.height);
+        for (kind, points) in fixture
+            .expected
+            .kinds
+            .iter()
+            .zip(fixture.expected.points.iter())
+        {
+            doc.strokes.push(StrokeDoc {
+                kind: kind.clone(),
+                points: points.clone(),
+                size: 6.0,
+                color: "#ff0000".to_string(),
+                erase: false,
+                opacity: 1.0,
+                smoothing: "off".to_string(),
+                timecode: None,
+            });
+        }
+        assert_eq!(doc.schema, fixture.expected.schema);
+        assert_eq!(
+            (doc.natural_w, doc.natural_h),
+            (fixture.expected.natural_w, fixture.expected.natural_h)
+        );
+        assert_eq!(doc.strokes.len(), fixture.expected.stroke_count);
+        assert!(doc
+            .strokes
+            .iter()
+            .flat_map(|stroke| stroke.points.iter())
+            .all(|point| (0.0..=1.0).contains(&point.p)));
+    }
+
     fn sample_doc() -> VectorDoc {
         let mut doc = VectorDoc::new(1920, 1080);
         doc.strokes.push(StrokeDoc {

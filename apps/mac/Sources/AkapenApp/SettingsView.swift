@@ -37,6 +37,7 @@ enum AkapenOutputDirMode: String, CaseIterable, Identifiable {
 /// @AppStorage で共有するキー名。AppState 側も UserDefaults.standard から
 /// 同じキーで読み戻すので、必ずここを唯一の出典にする。
 enum AkapenSettingsKey {
+    static let dockSide = "ui.dockSide"
     static let dirMode = "output.dirMode"
     static let subfolderName = "output.subfolderName"
     static let fixedDir = "output.fixedDir"
@@ -64,7 +65,6 @@ struct SettingsView: View {
         AkapenSettingsDefault.flatSuffix
     @AppStorage(AkapenSettingsKey.strokesSuffix) private var strokesSuffix: String =
         AkapenSettingsDefault.strokesSuffix
-
     private var dirMode: AkapenOutputDirMode {
         AkapenOutputDirMode(rawValue: dirModeRaw) ?? AkapenSettingsDefault.dirMode
     }

@@ -1,6 +1,11 @@
 # apps/windows
 
-Akapen Windows shell — the WinUI 3 + Windows App SDK (.NET 8) implementation
+Akapen legacy Windows shell — WinUI 3 + Windows App SDK (.NET 8)
+
+> This is not the Windows MVP execution path. The MVP is the raw Win32 shell
+> in `apps/windows-probe`, published self-contained to avoid Windows App
+> Runtime and separate .NET installation requirements. Keep this project for
+> later UI experiments and historical reference.
 of the M2 milestone (spec §9 M2 "Windows 写像", §7.4-4 UI-framework choice,
 §8.2 repository layout). Wraps the same `crates/akapen-ffi` C ABI the mac
 SwiftUI shell (`apps/mac`) drives — everything to do with strokes, palm
@@ -21,11 +26,14 @@ is fully proved out, the probe can be deleted.
 This project (`apps/windows`), by contrast, is the real M2 shell:
 
 - WinUI 3 (`UseWinUI=true`) + Windows App SDK, unpackaged
-  (`WindowsPackageType=None`) so `dotnet build` / `dotnet run` produce a
-  runnable exe without MSIX plumbing.
-- Consumes `bindings/dotnet/Akapen.Native` via `ProjectReference` — that is
-  the csbindgen-generated internal `NativeMethods` surface every managed
-  consumer of `akapen.dll` should share (one C ABI, one binding face).
+  (`WindowsPackageType=None`) with framework-dependent deployment. The target
+  machine must have the matching Windows App Runtime installed; this is the
+  supported runtime path for the Windows MVP.
+- Links the same csbindgen-generated `NativeMethods.g.cs` source used by
+  `bindings/dotnet/Akapen.Native` — the shell avoids a plain `net8.0`
+  `ProjectReference` because WinUI's XAML compiler cannot resolve that
+  managed assembly as Windows metadata (WMC1006). The generated source still
+  has one C ABI and one binding source of truth.
 - Renders through a WinUI `SwapChainPanel` (spec §7.4-6): the panel's raw
   `ISwapChainPanelNative*` (obtained via `QueryInterface`) is passed as
   `AkapenSurfaceDesc.handle` with `kind = AKAPEN_SURFACE_SWAPCHAIN_PANEL`;
@@ -254,28 +262,97 @@ This project (`apps/windows`), by contrast, is the real M2 shell:
   `AkapenEngine.setOutputNaming(flatSuffix:strokesSuffix:)` called from
   `AppState.save()` on every save).
 
+## In scope this chapter (M3-A)
+
+- **Full spec §3 shortcut table via `akapen_resolve_key`** (spec §9 M3
+  step A): every key-down bubbling up to `RootGrid` is threaded through
+  the pure core key map both shells share
+  (`crates/akapen-core/src/keymap.rs`), so the shortcut inventory lives
+  in exactly one place and both shells honor the same JIS/US recovery,
+  IME / text-editing guards, and primary-accelerator semantics (mac Cmd
+  == Windows Ctrl == core `primary`, cross-platform rule 1). Mirrors
+  `apps/mac/Sources/AkapenApp/CanvasView.swift`'s `keyDown` →
+  `resolveAction(for:)` → `dispatch(_)` chain from mac Ch.1.
+- **Single dispatch entry** (`MainWindow.xaml.cs::OnRootKeyDown`):
+  - Modifier state read via
+    `Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread`
+    (the WinUI 3 replacement for UWP's `CoreWindow.GetKeyState`).
+  - `ch` is a small VK→ASCII table that covers exactly the spec §3
+    shortcut inventory (A-Z folded to lowercase, `[` `]` `-` `_` `,`
+    `Space`, top-row digits). `VK_OEM_PLUS` is deliberately NOT mapped
+    to `^` — that is JIS-specific and would misfire on US layouts (the
+    mac Ch.1 keyCode-24 lesson). JIS `^` support waits for a proper
+    layout probe in a later chapter.
+  - `physical` maps every named `VirtualKey` we care about
+    (P/E/U/A/R/O/T/I/X/C/Z/Y, `Number0`, `Space`, `PageUp`, `PageDown`)
+    plus the `VK_OEM_4` / `VK_OEM_6` / `VK_OEM_MINUS` OEM codes (no
+    named `VirtualKey` members) to their `AKAPEN_PK_*` counterparts.
+  - `text_editing` is `IsTextInputFocused()` (`FocusManager` walked
+    against the current `XamlRoot`, matching every `TextBox` /
+    `RichEditBox` / `PasswordBox`, including the inner `TextBox` an
+    `AutoSuggestBox` / editable `ComboBox` composes onto). Pinned into
+    `composing` too — WinUI 3 has no cheap "is IME composing" probe
+    today and the core key map short-circuits the moment either guard
+    is set.
+- **Action dispatch table** (`DispatchAction(int action)`):
+  - Fanned out to existing M2-D / M2-F entry points so the KeyDown path
+    and the toolbar buttons stay in lock-step (including Codex Ch.10's
+    dirty-marker rationale that flows through the shared `Undo` /
+    `Redo` / `StepFrame` / `NudgeSize` methods): `AKAPEN_ACT_TOOL_PEN`,
+    `TOOL_ERASER`, `UNDO`, `REDO`, `BRUSH_SMALLER`, `BRUSH_LARGER`,
+    `NEXT_FRAME`, `PREV_FRAME`.
+  - Stubs — surface a modest StatusText note (`AnnounceUnimplementedAction`)
+    so an M3-A build makes them discoverable rather than silently
+    swallowing; real UI lands in M3-B / M3-C / M3-D: `TOOL_LINE`,
+    `TOOL_ARROW`, `TOOL_RECT`, `TOOL_ELLIPSE`, `TOOL_TEXT`, `ZOOM_IN`,
+    `ZOOM_OUT`, `FIT`, `ACTUAL_SIZE`, `ROTATE_LEFT`, `ROTATE_RIGHT`,
+    `SWAP_COLOR`, `EYEDROPPER`, `TRANSPARENT_COLOR`.
+- **XAML pre-M3-A KeyboardAccelerators removed** so the KeyDown → core
+  key map is the single dispatch path (no risk of double-invoke):
+  Ctrl+Z on `UndoButton`, Ctrl+Y / Ctrl+Shift+Z on `RedoButton`,
+  PageUp on `PrevButton`, PageDown on `NextButton`. The M2-D interim
+  code-behind `RegisterGlobalAccelerators` shim
+  (P / E / `[` / `]` / Ctrl+,) is likewise removed. Doc-comments and
+  button tooltips still spell each shortcut for discoverability.
+- **Shell-side special cases kept**:
+  - Ctrl+S (Save) — the core key map returns `AKAPEN_ACT_NONE` for it
+    (spec §3: "primary+letter combos other than Z/Y/=/-/0/Space are left
+    to the OS/menu"), so routing it through `OnRootKeyDown` would be a
+    no-op. `SaveButton.KeyboardAccelerators` in the XAML keeps its
+    Ctrl+S accelerator; the tooltip / access-key surface stays natural.
+  - Ctrl+, (Settings) — no `AKAPEN_ACT_*` exists for "open Settings"
+    (matching mac Cmd+, sitting on SwiftUI's Settings scene rather than
+    in `resolveAction`), so `OnRootKeyDown` catches Ctrl+, early with
+    the same `IsTextInputFocused` guard and calls
+    `EnsureSettingsWindow` directly.
+
 ## Not yet in scope (future M2 / M3 chapters)
 
 - **M2-B2**: Wintab (WACOM's native API), the second pen path for drivers
   with "Windows Ink" turned off (spec §5.1). `akapen_palm_route` and the
   pointer-kind/pressure plumbing landed in M2-B1 above; only the Wintab
   fallback input source itself remains.
-- **Touch-driven canvas pan/pinch** (the palm gate's `Navigate` routing is
-  wired up and reachable from M2-B1, but nothing consumes it yet beyond a
-  status-bar note). M3.
-- **M3**: Full shortcut table (spec §3), keyed off `akapen_resolve_key` so
-  the shortcut map stays in the core (mac and Windows share one table);
-  M2-D 先取り済みの P / E / [ / ] / Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z /
-  Ctrl+S 以外の項目はここで統合する。Also where the present pump graduates
-  from a fixed-cadence `DispatcherTimer` (started/stopped alongside the
-  loaded engine, M2-A) to an engine-dirty-flag-gated or compositor-synced
-  pump, once real profiling data says the fixed 16ms tick matters.
+- **Touch-driven canvas pinch** (the palm gate's `Navigate` routing is wired
+  up but touch gesture consumption remains a later refinement). Keyboard
+  zoom/fit/actual-size, rotation, and Space+drag pan are part of the Windows
+  MVP view state.
+- **M3-B / M3-C / M3-D — real UI for the remaining shortcut stubs**:
+  extra shape tools (U / A / R / O / T) and the color-model actions (swap
+  primary/sub, eyedropper, transparent-color). Zoom / fit / actual-size,
+  canvas rotate, and Space+drag pan are wired in the Windows MVP view state.
+- **JIS `^` rotation shortcut**: intentionally deferred until a proper
+  Windows keyboard-layout probe lands (mac Ch.1's keyCode-24 misfire
+  defense applies symmetrically here — `VK_OEM_PLUS` on a US layout must
+  never resolve to RotateRight). US `-` + Shift = `_` = RotateRight is
+  already reachable via the `VK_OEM_MINUS` character path today.
+- **Present-pump graduation**: from a fixed-cadence `DispatcherTimer`
+  (started/stopped alongside the loaded engine, M2-A) to an engine-
+  dirty-flag-gated or compositor-synced pump, once real profiling data
+  says the fixed 16ms tick matters.
 - **M3 refine**: SidePanel の hover-fade + フローティング化 (mac の
   `SidePanelView` は `.overlay(alignment: .trailing)` の半透明パネルで、
   ホバー時のみ opacity 0.4→0.97 に戻る)。M2-D は Grid の右列に固定配置
   したので canvas を圧迫するが、実測で邪魔なら refine 対象。
-- **M3 tools**: Line / Arrow / Rect / Ellipse / Text ツール — FFI 側の
-  `AKAPEN_TOOL_*` 定数は既に定義済み、UI 側の追加待ち。
 - **M3 color picker**: 任意色ピッカ (WinUI `ColorPicker`) — M2-D は
   10-swatch 固定パレットのみ、mac 側の `ColorPicker` 相当は M3。
 - **Settings reset button + project-scoped overrides**: `SettingsWindow`
@@ -287,8 +364,9 @@ This project (`apps/windows`), by contrast, is the real M2 shell:
   exposed to the Node binding surface (`bindings/node`); that lift is
   Ch.4 scope. Nothing outside the .NET / SwiftUI shells consumes the
   setter today.
-- **MSIX packaging**: distributable artifact + auto-update. `WindowsPackageType`
-  currently stays `None` so the dev loop is `dotnet build && dotnet run`.
+- **MSIX packaging**: distributable installer + auto-update. `WindowsPackageType`
+  currently stays `None`; the MVP distributes a framework-dependent publish
+  directory/zip and relies on the installed Windows App Runtime.
 - **4K perf gate**: spec §6 headline numbers on real hardware, first
   measurable now that M2-B1 lands the real pen path (mouse throughput was
   never the bottleneck).
@@ -317,7 +395,7 @@ two layers, not one:
   refuses to even evaluate a `net8.0-windows10.0.19041.0`-targeted project on
   a non-Windows OS by default.
 - Passing `-p:EnableWindowsTargeting=true` gets past that guard: restore and
-  the `Akapen.Native` project reference both succeed — nothing about
+  the generated binding source can be evaluated, but nothing about
   resolving the WindowsAppSDK NuGet packages themselves requires Windows.
   The build then fails for the real reason: WinUI 3's XAML compiler
   (`XamlCompiler.exe`, invoked via
@@ -350,24 +428,34 @@ Install one of:
 GitHub Actions `windows-latest` runners include VS 2022 with the necessary
 workloads preinstalled, so the CI job "apps-windows-shell" is unaffected.
 
-On the Windows dev box (`.34`, Session 1 required for real DX12 present):
+On the Windows dev box (`.34`, Session 1 required for real DX12 present), the
+shortest path is:
+
+```
+apps\windows\run-mvp.bat
+```
+
+The script builds the Rust FFI, regenerates the shared C# binding, publishes
+the framework-dependent x64 WinUI shell, copies `akapen.dll`, and starts the
+app. The machine must have the matching Windows App Runtime installed. The
+equivalent manual steps are:
 
 ```
 REM 1. Build the native library and regenerate the C# P/Invoke surface.
 cargo build -p akapen-ffi --release
 cargo run -p akapen-dotnet-bindgen
 
-REM 2. Build the shell.
-dotnet build apps\windows\AkapenApp\AkapenApp.csproj -c Release
+REM 2. Build the x64 shell.
+dotnet publish apps\windows\AkapenApp\AkapenApp.csproj -c Release -r win-x64 --self-contained false -p:Platform=x64 -p:WindowsAppSDKSelfContained=false -o apps\windows\AkapenApp\publish-win-x64
 
 REM 3. Copy the native DLL next to the shell exe (dotnet build does not do
 REM    this for a DLL it did not produce itself; the .NET P/Invoke resolver
 REM    finds akapen.dll via the exe's own output directory).
-copy target\release\akapen.dll apps\windows\AkapenApp\bin\Release\net8.0-windows10.0.19041.0\win-x64\akapen.dll
+copy target\release\akapen.dll apps\windows\AkapenApp\publish-win-x64\akapen.dll
 
 REM 4. Run (Session 1 required for real GPU present; Session 0 SSH cannot
 REM    reach a DX12 swapchain, same limitation apps/windows-probe hits).
-dotnet apps\windows\AkapenApp\bin\Release\net8.0-windows10.0.19041.0\win-x64\AkapenApp.dll
+apps\windows\AkapenApp\publish-win-x64\AkapenApp.exe
 ```
 
 Then: `Open…` an image, drag the left mouse button to draw a red stroke,

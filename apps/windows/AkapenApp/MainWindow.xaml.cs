@@ -1,9 +1,13 @@
-// Akapen main window (spec §7.4-4 / §9 M2 — WinUI 3 shell; M2-A first-cut
-// scaffold, M2-B1 real pointer kind/pressure + palm rejection, M2-D tool /
-// color / size / undo-redo UI, M2-F next/prev frame navigation + save-
-// failure data-loss guard, M2-E output-dir mode + suffix settings — spec
-// §4.7 — via an independent top-level SettingsWindow and a
-// SettingsStore-backed JSON at %LocalAppData%\Akapen\settings.json).
+// Akapen main window (spec §7.4-4 / §9 M2 / §9 M3 — WinUI 3 shell; M2-A
+// first-cut scaffold, M2-B1 real pointer kind/pressure + palm rejection,
+// M2-D tool / color / size / undo-redo UI, M2-F next/prev frame navigation
+// + save-failure data-loss guard, M2-E output-dir mode + suffix settings —
+// spec §4.7 — via an independent top-level SettingsWindow and a
+// SettingsStore-backed JSON at %LocalAppData%\Akapen\settings.json;
+// M3-A: full spec §3 shortcut table routed through akapen_resolve_key so
+// both shells share exactly one core key map — the interim per-button
+// KeyboardAccelerators for P/E/[/]/Ctrl+Z/Y/Shift+Z/PageUp/PageDown/Ctrl+,
+// have been removed and RootGrid.KeyDown is the single dispatch entry).
 //
 // Responsibilities kept in this file (mirrors apps/mac/Sources/AkapenApp/
 // AppState.swift + SidePanelView.swift, folded into the window itself since
@@ -49,24 +53,19 @@
 // apps/windows/README.md so nobody accidentally starts adding them):
 //   - Wintab (WACOM's native API, spec §5.1 second route, needed when a
 //     driver has "Windows Ink" turned off) — M2-B2.
-//   - Touch-driven canvas pan/pinch: the palm gate's Navigate routing is
-//     wired up and reachable (a deliberate touch with no pen in play), but
-//     nothing consumes it yet beyond a status-bar note.
+//   - Touch-driven canvas pinch remains a later gesture pass; Space+drag pan,
+//     keyboard zoom/fit/rotation, and their inverse coordinate mapping are
+//     part of the Windows MVP view state.
 //   - Tools other than Pen/Eraser (Line / Arrow / Rect / Ellipse / Text
-//     exist in the FFI, M3 UI scope).
+//     exist in the FFI; M3-A wires their shortcut keys through
+//     akapen_resolve_key with a StatusText stub, and the real UI lands in
+//     the M3-B/C/D chapters).
 //   - Arbitrary-color picker (WinUI ColorPicker) — M3; M2-D only ships the
 //     10-swatch fixed palette.
-//   - Full spec §3 shortcut table via akapen_resolve_key (only the主要行
-//     P/E/[/]/Ctrl+Z/Ctrl+Y/Ctrl+Shift+Z/Ctrl+S先取り) — M3.
 //   - SidePanel の hover-fade / フローティング化 — M3 の refine 候補
 //     (README 参照)。M2-D は Grid の右列に固定配置。
 //   - Settings のリセットボタン / プロジェクトごとの設定上書き — spec §4.7
 //     の「将来検討」に相当。M2-E は「アプリローカルの単一 settings.json」まで。
-//   - Zoom / pan / rotate remap (view scale != 1, non-zero rotation).
-//     PushPointerSample inverts the *centered, scale-1* placement
-//     OnPresentTick renders (panel DIP size <-> image pixel size), which
-//     holds across ordinary window resizes since both sides read the
-//     panel's live ActualWidth/Height; it does not attempt zoom/pan yet.
 //
 // The engine handle is stored as IntPtr (mirrors apps/windows-probe's
 // choice) rather than a raw AkapenEngine* field — C# raw-pointer fields on
@@ -96,6 +95,7 @@ using Windows.Storage;
 using Windows.Storage.Pickers;
 using Windows.System; // VirtualKey / VirtualKeyModifiers
 using Windows.UI; // Color struct (WinUI 3 still uses Windows.UI.Color)
+using Windows.UI.Core; // CoreVirtualKeyStates for InputKeyboardSource.GetKeyStateForCurrentThread
 using Microsoft.UI; // Colors static class (WinUI 3's; Windows.UI.Colors is UWP-only)
 
 namespace AkapenApp;
@@ -204,6 +204,19 @@ public sealed partial class MainWindow : Window
     // reconfigure), the shell logs the initial value.
     private float _scaleFactor = 1.0f;
 
+    // View state shared by rendering and pointer inverse mapping. `_zoom` is
+    // image-pixel scale before the backing DPI factor; pan is in physical
+    // surface pixels so the render and input paths use identical math.
+    private float _zoom = 1.0f;
+    private float _rotationDeg;
+    private float _panX;
+    private float _panY;
+    private uint _panPointerId;
+    private bool _isPanning;
+    private Windows.Foundation.Point _lastPanPoint;
+    private const float MinZoom = 0.02f;
+    private const float MaxZoom = 20.0f;
+
     // ── M2-E settings window (spec §4.7) ───────────────────────────────────
     // The independent top-level SettingsWindow the "Settings…" button /
     // Ctrl+, opens. Non-null while open; cleared to null in Closed so a
@@ -258,7 +271,23 @@ public sealed partial class MainWindow : Window
 
     public MainWindow()
     {
-        this.InitializeComponent();
+        try
+        {
+            this.InitializeComponent();
+        }
+        catch (Exception ex)
+        {
+            // Keep startup failures diagnosable on an unpackaged double-click
+            // launch, where an unhandled WinRT XamlParseException otherwise
+            // only appears as 0xc000027b in the Application event log.
+            string logPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Akapen",
+                "startup-error.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+            File.WriteAllText(logPath, ex.ToString());
+            throw;
+        }
         this.Closed += OnWindowClosed;
 
         // Diagnostic logger routes wgpu-side attach failures to stderr — the
@@ -266,10 +295,12 @@ public sealed partial class MainWindow : Window
         // the probe (apps/windows-probe/AkapenProbe/Program.cs:53).
         NativeMethods.akapen_enable_diagnostic_logging();
 
-        // Populate the right-hand color palette from PaletteColors and register
-        // the single-key shortcuts (P / E / [ / ]) that XAML can't spell.
+        // Populate the right-hand color palette from PaletteColors. The spec
+        // §3 shortcut table itself is handled by the M3-A OnRootKeyDown →
+        // akapen_resolve_key path (registered in MainWindow.xaml via
+        // KeyDown="OnRootKeyDown" on RootGrid), so there is no interim
+        // per-key KeyboardAccelerator registration here anymore.
         BuildColorSwatches();
-        RegisterGlobalAccelerators();
     }
 
     // ── SwapChainPanel lifecycle ───────────────────────────────────────────
@@ -352,15 +383,14 @@ public sealed partial class MainWindow : Window
     {
         if (!_renderAttached || _engine == IntPtr.Zero) return;
 
-        // Center-in-viewport, 1:1 zoom for M2-A. Zoom / pan / rotate UI is
-        // M2-D; the transform shape is what the mac shell also passes on
-        // its opening frame (apps/mac/Sources/AkapenApp/CanvasView.swift).
+        // Keep rendering and pointer input on the same view transform. The
+        // center is stored in physical pixels, matching the FFI contract.
         var view = new AkapenViewTransform
         {
-            center_x = _surfaceWidth / 2.0f,
-            center_y = _surfaceHeight / 2.0f,
-            scale = _scaleFactor,
-            rotation_deg = 0.0f,
+            center_x = _surfaceWidth / 2.0f + _panX,
+            center_y = _surfaceHeight / 2.0f + _panY,
+            scale = _zoom * _scaleFactor,
+            rotation_deg = _rotationDeg,
         };
         unsafe
         {
@@ -407,6 +437,13 @@ public sealed partial class MainWindow : Window
         }
 
         _activePointerIds.Add(id);
+        if (IsKeyDown(VirtualKey.Space) && e.Pointer.PointerDeviceType != PointerDeviceType.Touch)
+        {
+            _isPanning = true;
+            _panPointerId = id;
+            _lastPanPoint = e.GetCurrentPoint((UIElement)sender).Position;
+            return;
+        }
         if (!PushPointerSample(sender, e, phase: 0 /*Down*/))
         {
             // Pressed outside the displayed image (see PushPointerSample):
@@ -419,6 +456,14 @@ public sealed partial class MainWindow : Window
     private void OnRenderSurfacePointerMoved(object sender, PointerRoutedEventArgs e)
     {
         if (!_activePointerIds.Contains(e.Pointer.PointerId)) return;
+        if (_isPanning && _panPointerId == e.Pointer.PointerId)
+        {
+            var current = e.GetCurrentPoint((UIElement)sender).Position;
+            _panX += (float)((current.X - _lastPanPoint.X) * _scaleFactor);
+            _panY += (float)((current.Y - _lastPanPoint.Y) * _scaleFactor);
+            _lastPanPoint = current;
+            return;
+        }
         PushPointerSample(sender, e, phase: 1 /*Move*/);
     }
 
@@ -426,7 +471,14 @@ public sealed partial class MainWindow : Window
     {
         uint id = e.Pointer.PointerId;
         if (!_activePointerIds.Remove(id)) return;
-        PushPointerSample(sender, e, phase: 2 /*Up*/);
+        if (_isPanning && _panPointerId == id)
+        {
+            _isPanning = false;
+        }
+        else
+        {
+            PushPointerSample(sender, e, phase: 2 /*Up*/);
+        }
         _lastPointerPosition.Remove(id);
         ((UIElement)sender).ReleasePointerCapture(e.Pointer);
     }
@@ -440,7 +492,14 @@ public sealed partial class MainWindow : Window
         uint id = e.Pointer.PointerId;
         if (_activePointerIds.Remove(id))
         {
-            PushPointerSample(sender, e, phase: 2 /*Up*/);
+            if (_isPanning && _panPointerId == id)
+            {
+                _isPanning = false;
+            }
+            else
+            {
+                PushPointerSample(sender, e, phase: 2 /*Up*/);
+            }
         }
         _lastPointerPosition.Remove(id);
     }
@@ -459,6 +518,13 @@ public sealed partial class MainWindow : Window
         bool wasActive = _activePointerIds.Remove(id);
         _lastPointerPosition.Remove(id);
         if (!wasActive) return;
+
+        if (_isPanning && _panPointerId == id)
+        {
+            _isPanning = false;
+            ((UIElement)sender).ReleasePointerCapture(e.Pointer);
+            return;
+        }
 
         // The canceled event's own PointerPoint.Position is not reliable
         // here (the contact can already be gone) — fall back to the last
@@ -515,7 +581,15 @@ public sealed partial class MainWindow : Window
         {
             case PointerDeviceType.Pen:
                 kind = 0 /*Pen*/;
-                pressure = point.Properties.Pressure;
+                double nativePressure = point.Properties.Pressure;
+                // Windows Ink may expose a pen contact with an unusable zero
+                // pressure on drivers that do not publish pressure. Keep the
+                // MVP drawable with a safe fixed-width fallback; the core's
+                // pressure-stuck detector still reports that the signal was
+                // not varying, so this is never a silent capability loss.
+                pressure = nativePressure > 0.0 && nativePressure <= 1.0
+                    ? nativePressure
+                    : 1.0;
                 break;
             case PointerDeviceType.Touch:
                 kind = 1 /*Touch*/;
@@ -527,24 +601,24 @@ public sealed partial class MainWindow : Window
                 break;
         }
 
-        // Coordinate mapping (unchanged M2-A math, just computed ahead of the
-        // palm gate now — see the bounds-check note below): invert the
-        // render surface's centered placement (OnPresentTick's
-        // AkapenViewTransform: center = physical surface size / 2, scale =
-        // _scaleFactor). Converting that forward mapping from physical
-        // pixels back to the DIPs PointerRoutedEventArgs reports cancels the
-        // scale factor algebraically, leaving exactly the 1:1-in-DIP inverse
-        // below (panel DIP size in, image pixel size out). Reading
-        // panel.ActualWidth/Height live (rather than a cached field) keeps
-        // this correct across ordinary window resizes too. What is still not
-        // handled here is zoom/pan/rotate (view scale != 1 or non-zero
-        // rotation) — that remap is M2-D scope (see class doc).
+        // Invert the same transform used by OnPresentTick. Pointer positions
+        // arrive in DIPs; the FFI view is in physical pixels.
         var panel = (FrameworkElement)sender;
         var pt = positionOverride ?? point.Position;
-        double panelW = panel.ActualWidth;
-        double panelH = panel.ActualHeight;
-        double ex = _imgWidth / 2.0 + (pt.X - panelW / 2.0);
-        double ey = _imgHeight / 2.0 + (pt.Y - panelH / 2.0);
+        double px = pt.X * _scaleFactor;
+        double py = pt.Y * _scaleFactor;
+        double dx = px - (_surfaceWidth / 2.0 + _panX);
+        double dy = py - (_surfaceHeight / 2.0 + _panY);
+        double rad = -_rotationDeg * Math.PI / 180.0;
+        double cos = Math.Cos(rad);
+        double sin = Math.Sin(rad);
+        double rx = dx * cos - dy * sin;
+        double ry = dx * sin + dy * cos;
+        double effectiveScale = Math.Abs(_zoom * _scaleFactor) < 1e-6
+            ? 1.0
+            : _zoom * _scaleFactor;
+        double ex = _imgWidth / 2.0 + rx / effectiveScale;
+        double ey = _imgHeight / 2.0 + ry / effectiveScale;
         bool inBounds = ex >= 0 && ex <= _imgWidth && ey >= 0 && ey <= _imgHeight;
 
         if (phase == 0 /*Down*/ && !inBounds)
@@ -720,6 +794,11 @@ public sealed partial class MainWindow : Window
         _currentPath = path;
         _imgWidth = w;
         _imgHeight = h;
+        _zoom = 1.0f;
+        _rotationDeg = 0.0f;
+        _panX = 0.0f;
+        _panY = 0.0f;
+        _isPanning = false;
         // Fresh image, fresh read: no unsaved strokes yet (mirrors
         // AppState.open resetting `hasUnsavedStrokes = false` on mac).
         _hasUnsavedStrokes = false;
@@ -822,22 +901,6 @@ public sealed partial class MainWindow : Window
     private void OnPrevClick(object sender, RoutedEventArgs e) => StepFrame(forward: false);
 
     private void OnNextClick(object sender, RoutedEventArgs e) => StepFrame(forward: true);
-
-    /// <summary>
-    /// Shared Invoked handler for the PageUp/PageDown KeyboardAccelerators on
-    /// PrevButton/NextButton in MainWindow.xaml — same shape as
-    /// OnUndoRedoAcceleratorInvoked: it only ever guards against a future
-    /// text-input control (see IsTextInputFocused's doc) and otherwise leaves
-    /// Handled at its default false, letting the button's own Invoke control
-    /// pattern auto-fire Click (OnPrevClick/OnNextClick) as usual.
-    /// </summary>
-    private void OnStepAcceleratorInvoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
-    {
-        if (IsTextInputFocused())
-        {
-            args.Handled = true;
-        }
-    }
 
     /// <summary>
     /// Steps to the previous/next entry in <see cref="_siblings"/> (spec
@@ -1297,43 +1360,37 @@ public sealed partial class MainWindow : Window
         SizeSlider.Value = next;
     }
 
-    /// <summary>
-    /// Shared Invoked handler for the Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z
-    /// KeyboardAccelerators declared on UndoButton/RedoButton in
-    /// MainWindow.xaml (see IsTextInputFocused's doc for why this guard
-    /// exists). Per the KeyboardAccelerator docs, a Button's Click normally
-    /// fires automatically via its Invoke control pattern whether or not
-    /// Invoked is subscribed; setting args.Handled = true here is what
-    /// suppresses that when a text-input control has focus. When it doesn't,
-    /// this leaves Handled at its default false, so the existing
-    /// auto-invoked-Click path is unchanged from before this fix.
-    /// </summary>
-    private void OnUndoRedoAcceleratorInvoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
-    {
-        if (IsTextInputFocused())
-        {
-            args.Handled = true;
-        }
-    }
+    private void OnUndoClick(object sender, RoutedEventArgs e) => Undo();
 
-    private void OnUndoClick(object sender, RoutedEventArgs e)
+    private void OnRedoClick(object sender, RoutedEventArgs e) => Redo();
+
+    /// <summary>
+    /// Shared undo path — called by the toolbar UndoButton click and by
+    /// the M3-A OnRootKeyDown dispatch of AKAPEN_ACT_UNDO. Kept as a
+    /// separate method so both entry points go through exactly the same
+    /// dirty-marker arming logic (Codex Ch.10 review, Medium1: undo/redo
+    /// changes the composited frame just as much as a drawn stroke does, so
+    /// it must arm the same data-loss guard PushPointerSample does —
+    /// otherwise "draw → save → undo/redo → Next/Open/close" silently drops
+    /// the post-undo/redo state because _hasUnsavedStrokes never got set
+    /// back to true).
+    /// </summary>
+    private void Undo()
     {
         if (_engine == IntPtr.Zero) return;
         unsafe { NativeMethods.akapen_undo((AkapenEngine*)_engine); }
-        // Codex Ch.10 review (Medium1): undo/redo changes the composited
-        // frame just as much as a drawn stroke does, so it must arm the same
-        // data-loss guard PushPointerSample does — otherwise "draw → save →
-        // undo/redo → Next/Open/close" silently drops the post-undo/redo
-        // state because _hasUnsavedStrokes never got set back to true.
         _hasUnsavedStrokes = true;
         UpdateDirtyIndicator();
     }
 
-    private void OnRedoClick(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// Shared redo path — see <see cref="Undo"/>'s doc for the shared
+    /// dirty-marker arming rationale.
+    /// </summary>
+    private void Redo()
     {
         if (_engine == IntPtr.Zero) return;
         unsafe { NativeMethods.akapen_redo((AkapenEngine*)_engine); }
-        // See OnUndoClick's comment — same guard, same reason.
         _hasUnsavedStrokes = true;
         UpdateDirtyIndicator();
     }
@@ -1357,108 +1414,336 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    // ── M3-A: full spec §3 shortcut table via akapen_resolve_key ──────────
+    //
+    // Every key-down on RootGrid is threaded through the same pure core
+    // key map both shells share (`crates/akapen-core/src/keymap.rs`), so the
+    // shortcut table lives in exactly one place and both shells honor the
+    // same JIS/US recovery rules, IME/text-editing guards, and primary-
+    // accelerator semantics (mac Cmd == Windows Ctrl == core `primary`,
+    // cross-platform rule 1). Mirrors apps/mac/Sources/AkapenApp/
+    // CanvasView.swift's keyDown → resolveAction(for:) → dispatch(_) chain
+    // from mac Ch.1.
+    //
+    // Wired from MainWindow.xaml via KeyDown="OnRootKeyDown" on RootGrid,
+    // which reaches this handler as a routed event bubbling up from whichever
+    // focused control the key-down originated on (SwapChainPanel, toolbar
+    // button, or Slider — the last one is the reason the Slider's own
+    // PageUp/PageDown "big step" behavior gets pre-empted by the core map's
+    // NEXT_FRAME/PREV_FRAME action, which is the intended UX). Ctrl+S is
+    // deliberately NOT threaded through here (it keeps its per-button
+    // KeyboardAccelerator on SaveButton in MainWindow.xaml, since the core
+    // key map returns AKAPEN_ACT_NONE for it anyway per spec §3's "primary+
+    // letter combos other than Z/Y/=/-/0/Space are left to the OS/menu";
+    // routing it through this handler would be a no-op) and Ctrl+, is
+    // handled as a shell-side special case here (no matching AKAPEN_ACT_*
+    // exists for "open Settings", matching how mac Cmd+, sits on SwiftUI's
+    // Settings scene rather than in resolveAction).
+
     /// <summary>
-    /// Registers the single-key shortcuts that can't sit on their owning
-    /// button in XAML: P / E have no modifier (KeyboardAccelerator on a
-    /// specific button would only fire while that button had focus), and
-    /// `[` / `]` map to VirtualKey 0xDB / 0xDD (VK_OEM_4 / VK_OEM_6 in
-    /// Win32 land), which the Windows.System.VirtualKey enum has no named
-    /// members for — hence the raw enum cast. Scope defaults to the window,
-    /// so these dispatch regardless of which control has focus (the mac
-    /// shell handles the same shortcuts via SwiftUI .keyboardShortcut).
-    ///
-    /// Modifier-bearing shortcuts (Ctrl+S / Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
-    /// remain on their owning buttons in MainWindow.xaml — that's the
-    /// idiomatic WinUI placement and pairs naturally with the button's
-    /// tooltip.
-    ///
-    /// Only the spec §3 主要行 (Pen/Eraser 切替 + サイズ増減 + undo/redo)
-    /// are先取り実装; the full shortcut table routes through
-    /// akapen_resolve_key in M3.
+    /// M3-A KeyDown pipeline: extract ch / physical / modifier flags from the
+    /// WinUI 3 <see cref="KeyRoutedEventArgs"/>, hand them to the core key
+    /// map (<c>akapen_resolve_key</c>), and dispatch the returned
+    /// <c>AKAPEN_ACT_*</c> through <see cref="DispatchAction"/>.
     /// </summary>
-    private void RegisterGlobalAccelerators()
+    private void OnRootKeyDown(object sender, KeyRoutedEventArgs e)
     {
-        AddRootAccelerator(VirtualKey.P, VirtualKeyModifiers.None, (_, args) =>
+        if (e.Handled) return;
+
+        // Live modifier state. WinUI 3's KeyRoutedEventArgs exposes only the
+        // pressed key itself, not the current Ctrl/Shift/Alt state — so we
+        // consult Microsoft.UI.Input's per-thread keyboard-state helper (the
+        // WinUI 3 replacement for UWP's Windows.UI.Core.CoreWindow.GetKeyState).
+        bool ctrl = IsKeyDown(VirtualKey.Control);
+        bool shift = IsKeyDown(VirtualKey.Shift);
+        bool alt = IsKeyDown(VirtualKey.Menu); // VK_MENU == Alt
+
+        bool textEditing = IsTextInputFocused();
+
+        // Shell-side special case: Ctrl+, opens Settings. Deliberately not
+        // routed through akapen_resolve_key (the core key map has no
+        // matching AKAPEN_ACT_*, mirroring mac's Cmd+, being handled at the
+        // SwiftUI Settings-scene level rather than in resolveAction). We
+        // still respect the same text-editing guard the core key map applies
+        // so a future Text tool's own Ctrl+, isn't hijacked mid-typing.
+        if (ctrl && !shift && !alt && (uint)e.Key == 0xBC /*VK_OEM_COMMA*/)
         {
-            if (IsTextInputFocused()) return; // see IsTextInputFocused doc
-            SelectTool(0);
-            args.Handled = true;
-        });
-        AddRootAccelerator(VirtualKey.E, VirtualKeyModifiers.None, (_, args) =>
+            if (!textEditing)
+            {
+                EnsureSettingsWindow();
+                e.Handled = true;
+            }
+            return;
+        }
+
+        // Route everything else through the core key map. ch/physical are
+        // extracted layout-agnostically (physical) plus a small VK→ASCII
+        // table for the produced-character path (ch). Composing is
+        // conservatively pinned to text_editing because WinUI 3 has no
+        // cheap "is IME composing" probe today; that only matters if the
+        // core key map ever cares about (composing && !text_editing), which
+        // it does not (keymap.rs::resolve returns None the moment either is
+        // set), so the pin never changes behavior.
+        uint ch = ExtractCharacter(e.Key, shift);
+        int physical = ExtractPhysical(e.Key);
+        int primary = ctrl ? 1 : 0;
+        int shiftFlag = shift ? 1 : 0;
+        int altFlag = alt ? 1 : 0;
+        int guardFlag = textEditing ? 1 : 0;
+
+        int action = NativeMethods.akapen_resolve_key(
+            ch, physical, primary, shiftFlag, altFlag, guardFlag, guardFlag);
+
+        if (action == 0 /*AKAPEN_ACT_NONE*/) return;
+
+        if (DispatchAction(action))
         {
-            if (IsTextInputFocused()) return;
-            SelectTool(1);
-            args.Handled = true;
-        });
-        AddRootAccelerator((VirtualKey)0xDB, VirtualKeyModifiers.None, (_, args) =>
-        {
-            if (IsTextInputFocused()) return;
-            NudgeSize(-1.0f); // `[`
-            args.Handled = true;
-        });
-        AddRootAccelerator((VirtualKey)0xDD, VirtualKeyModifiers.None, (_, args) =>
-        {
-            if (IsTextInputFocused()) return;
-            NudgeSize(+1.0f); // `]`
-            args.Handled = true;
-        });
-        // M2-E: Ctrl+, で SettingsWindow を開く / フォーカスする(spec §4.7)。
-        // mac Cmd+, の慣習を Windows に写像。VK_OEM_COMMA (0xBC) は
-        // Windows.System.VirtualKey に named member が無いので raw キャスト
-        // で登録する(`[`/`]` と同じ事情)。text-input が focus 中は Ctrl+,
-        // をそちらへ譲る(将来の Text ツール / Settings 内 TextBox で
-        // Ctrl+, が発火してモーダル的に別ウィンドウが開くと混乱するため)。
-        AddRootAccelerator((VirtualKey)0xBC, VirtualKeyModifiers.Control, (_, args) =>
-        {
-            if (IsTextInputFocused()) return;
-            EnsureSettingsWindow();
-            args.Handled = true;
-        });
+            e.Handled = true;
+        }
     }
 
     /// <summary>
-    /// Codex Ch.9 review (Medium): P / E / <c>[</c> / <c>]</c> above, and the
-    /// Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z accelerators on UndoButton/RedoButton in
-    /// MainWindow.xaml, are unscoped app accelerators (spec §3 主要行の先取
-    /// り) — WinUI resolves them at the window level regardless of which
-    /// control currently has keyboard focus (see "Resolving accelerators" in
-    /// Microsoft's keyboard-accelerators doc). M2-D and M2-E ship no
-    /// text-input control on this window itself (M2-E's Settings TextBoxes
-    /// live in a separate top-level SettingsWindow whose own XamlRoot is
-    /// not the one this guard walks), so today this never actually fires
-    /// with a text box focused. But a Text tool (M3) will add one to
-    /// MainWindow itself, and once that happens these single-key/Ctrl+Z+Y+
-    /// Shift+Z/Ctrl+, shortcuts would otherwise steal keystrokes mid-edit
-    /// — the same
-    /// hazard the core's own contract already guards against
-    /// (keymap.rs::resolve returns None while composing || text_editing; see
-    /// the generated composing/text_editing parameters on
-    /// NativeMethods.g.cs's akapen_resolve_key binding). This shell doesn't
-    /// route through akapen_resolve_key yet (M3, see class doc), so this is
-    /// the interim guard: every accelerator handler checks focus first and
-    /// backs off if a text-input control owns it, leaving the keystroke for
-    /// that control's own input pipeline instead of running our shortcut.
-    /// Ctrl+S (Save) deliberately keeps its unguarded pre-existing behavior —
-    /// see the comment on its KeyboardAccelerator in MainWindow.xaml.
+    /// True while the given key is physically down, per the WinUI 3 per-
+    /// thread keyboard-state helper (the modern replacement for UWP's
+    /// <c>CoreWindow.GetKeyState</c>). The <c>Down</c> bit of
+    /// <see cref="CoreVirtualKeyStates"/> is the pressed-right-now flag;
+    /// <c>Locked</c> is for CapsLock/NumLock/ScrollLock and is deliberately
+    /// ignored here (a locked Shift would be spelled as "Shift is down"
+    /// which is exactly what a keydown while CapsLock is on already looks
+    /// like).
+    /// </summary>
+    private static bool IsKeyDown(VirtualKey key) =>
+        (InputKeyboardSource.GetKeyStateForCurrentThread(key) & CoreVirtualKeyStates.Down)
+            == CoreVirtualKeyStates.Down;
+
+    /// <summary>
+    /// Approximates macOS's <c>charactersIgnoringModifiers</c> for a WinUI 3
+    /// <see cref="VirtualKey"/>. WinUI 3 has no direct equivalent —
+    /// <see cref="KeyRoutedEventArgs.Key"/> is a raw VK code, not a produced
+    /// character — so we hand-build the small VK→ASCII table for exactly the
+    /// spec §3 shortcut inventory. A-Z always normalize to lowercase (the
+    /// core keymap.rs::resolve_char upper-lower folds internally); the Shift
+    /// state is only meaningful for the JIS/US rotate recovery on
+    /// <c>VK_OEM_MINUS</c> (bare <c>-</c> → RotateLeft; Shift+<c>-</c> = <c>_</c>
+    /// → RotateRight, spec §3.1 の "US 配列は Shift+`-` を代替併設").
+    ///
+    /// <para><c>VK_OEM_PLUS</c> is deliberately NOT mapped to <c>^</c> here:
+    /// the JIS caret and the US `+`/`=` share a physical position but produce
+    /// different characters, and misfiring RotateRight on a US `=` is the
+    /// same class of bug mac Ch.1 fixed with its keyCode-24 defense
+    /// (apps/mac/Sources/AkapenApp/CanvasView.swift). Real JIS `^` support
+    /// waits for a proper layout probe (M3-B or later).</para>
+    /// </summary>
+    private static uint ExtractCharacter(VirtualKey key, bool shift)
+    {
+        if (key >= VirtualKey.A && key <= VirtualKey.Z)
+        {
+            return (uint)('a' + (int)(key - VirtualKey.A));
+        }
+        if (key >= VirtualKey.Number0 && key <= VirtualKey.Number9)
+        {
+            return (uint)('0' + (int)(key - VirtualKey.Number0));
+        }
+        if (key == VirtualKey.Space)
+        {
+            return (uint)' ';
+        }
+        // OEM keys — Windows.System.VirtualKey has no named members for
+        // these, so match on the raw VK values.
+        switch ((uint)key)
+        {
+            case 0xBD /*VK_OEM_MINUS*/:
+                return shift ? (uint)'_' : (uint)'-';
+            case 0xBC /*VK_OEM_COMMA*/:
+                return (uint)',';
+            case 0xDB /*VK_OEM_4*/:
+                return (uint)'[';
+            case 0xDD /*VK_OEM_6*/:
+                return (uint)']';
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// VK → AKAPEN_PK_* mapping (mirrors apps/mac/Sources/AkapenApp/
+    /// CanvasView.swift's physicalCode(for:) mac Carbon keyCode table). The
+    /// physical-key path is the array-independent recovery for keys whose
+    /// produced character depends on layout or was swallowed by an IME
+    /// (spec §3 cross-platform rule 5). <c>VK_OEM_PLUS</c> intentionally
+    /// stays <c>AKAPEN_PK_OTHER</c> for the same US-misfire reason
+    /// <see cref="ExtractCharacter"/> refuses to map it to <c>^</c>.
+    /// </summary>
+    private static int ExtractPhysical(VirtualKey key)
+    {
+        switch (key)
+        {
+            case VirtualKey.P: return 1 /*AKAPEN_PK_P*/;
+            case VirtualKey.E: return 2 /*AKAPEN_PK_E*/;
+            case VirtualKey.U: return 3 /*AKAPEN_PK_U*/;
+            case VirtualKey.A: return 4 /*AKAPEN_PK_A*/;
+            case VirtualKey.R: return 5 /*AKAPEN_PK_R*/;
+            case VirtualKey.O: return 6 /*AKAPEN_PK_O*/;
+            case VirtualKey.T: return 7 /*AKAPEN_PK_T*/;
+            case VirtualKey.I: return 8 /*AKAPEN_PK_I*/;
+            case VirtualKey.X: return 9 /*AKAPEN_PK_X*/;
+            case VirtualKey.C: return 10 /*AKAPEN_PK_C*/;
+            case VirtualKey.Z: return 11 /*AKAPEN_PK_Z*/;
+            case VirtualKey.Y: return 12 /*AKAPEN_PK_Y*/;
+            case VirtualKey.Number0: return 13 /*AKAPEN_PK_DIGIT0*/;
+            case VirtualKey.Space: return 14 /*AKAPEN_PK_SPACE*/;
+            case VirtualKey.PageUp: return 19 /*AKAPEN_PK_PAGE_UP*/;
+            case VirtualKey.PageDown: return 20 /*AKAPEN_PK_PAGE_DOWN*/;
+        }
+        switch ((uint)key)
+        {
+            case 0xDB /*VK_OEM_4*/: return 15 /*AKAPEN_PK_BRACKET_LEFT*/;
+            case 0xDD /*VK_OEM_6*/: return 16 /*AKAPEN_PK_BRACKET_RIGHT*/;
+            case 0xBD /*VK_OEM_MINUS*/: return 17 /*AKAPEN_PK_MINUS*/;
+        }
+        return 0 /*AKAPEN_PK_OTHER*/;
+    }
+
+    /// <summary>
+    /// Dispatch table for the AKAPEN_ACT_* code returned by
+    /// <c>akapen_resolve_key</c>. Actions the M2-D/M2-F UI already implements
+    /// (Pen/Eraser tool switch, Undo/Redo, brush size, next/prev frame) fan
+    /// out to those existing entry points so the KeyDown path and the toolbar
+    /// buttons stay in lock-step (Codex Ch.10 review's dirty-marker rationale
+    /// still holds for all of them via the shared <see cref="Undo"/>/
+    /// <see cref="Redo"/>/<see cref="StepFrame"/>/<see cref="NudgeSize"/>
+    /// paths). View actions are implemented in the Windows MVP view state;
+    /// extra tools and color-model actions still surface a modest StatusText
+    /// note until their later M3 UI lands.
+    /// </summary>
+    /// <returns>True when the action was consumed (KeyDown should mark
+    /// <c>e.Handled = true</c>); false when the code fell through the switch
+    /// (should not happen for any AKAPEN_ACT_* the core key map returns
+    /// today, but leaves room for the enum growing in the future).</returns>
+    private bool DispatchAction(int action)
+    {
+        switch (action)
+        {
+            // ── Wired to existing M2-D / M2-F entry points ────────────────
+            case 1 /*AKAPEN_ACT_TOOL_PEN*/:
+                SelectTool(0);
+                return true;
+            case 2 /*AKAPEN_ACT_TOOL_ERASER*/:
+                SelectTool(1);
+                return true;
+            case 10 /*AKAPEN_ACT_UNDO*/:
+                Undo();
+                return true;
+            case 11 /*AKAPEN_ACT_REDO*/:
+                Redo();
+                return true;
+            case 18 /*AKAPEN_ACT_BRUSH_SMALLER*/:
+                NudgeSize(-1.0f);
+                return true;
+            case 19 /*AKAPEN_ACT_BRUSH_LARGER*/:
+                NudgeSize(+1.0f);
+                return true;
+            case 20 /*AKAPEN_ACT_NEXT_FRAME*/:
+                StepFrame(forward: true);
+                return true;
+            case 21 /*AKAPEN_ACT_PREV_FRAME*/:
+                StepFrame(forward: false);
+                return true;
+
+            // ── Remaining stubs — real UI lands in M3-B / M3-C / M3-D ───
+            case 3 /*AKAPEN_ACT_TOOL_LINE*/:
+                return AnnounceUnimplementedAction("Line tool (U)");
+            case 4 /*AKAPEN_ACT_TOOL_ARROW*/:
+                return AnnounceUnimplementedAction("Arrow tool (A)");
+            case 5 /*AKAPEN_ACT_TOOL_RECT*/:
+                return AnnounceUnimplementedAction("Rect tool (R)");
+            case 6 /*AKAPEN_ACT_TOOL_ELLIPSE*/:
+                return AnnounceUnimplementedAction("Ellipse tool (O)");
+            case 7 /*AKAPEN_ACT_TOOL_TEXT*/:
+                return AnnounceUnimplementedAction("Text tool (T)");
+            case 12 /*AKAPEN_ACT_ZOOM_IN*/:
+                ZoomBy(1.2f);
+                return true;
+            case 13 /*AKAPEN_ACT_ZOOM_OUT*/:
+                ZoomBy(1.0f / 1.2f);
+                return true;
+            case 14 /*AKAPEN_ACT_FIT*/:
+                FitToWindow();
+                return true;
+            case 15 /*AKAPEN_ACT_ACTUAL_SIZE*/:
+                _zoom = 1.0f;
+                _panX = 0.0f;
+                _panY = 0.0f;
+                SetStatus("View: 100%");
+                return true;
+            case 16 /*AKAPEN_ACT_ROTATE_LEFT*/:
+                _rotationDeg -= 15.0f;
+                SetStatus($"View: rotate {_rotationDeg:0}°");
+                return true;
+            case 17 /*AKAPEN_ACT_ROTATE_RIGHT*/:
+                _rotationDeg += 15.0f;
+                SetStatus($"View: rotate {_rotationDeg:0}°");
+                return true;
+            case 22 /*AKAPEN_ACT_SWAP_COLOR*/:
+                return AnnounceUnimplementedAction("Swap primary/sub color (X)");
+            case 23 /*AKAPEN_ACT_EYEDROPPER*/:
+                return AnnounceUnimplementedAction("Eyedropper (I)");
+            case 24 /*AKAPEN_ACT_TRANSPARENT_COLOR*/:
+                return AnnounceUnimplementedAction("Transparent color (C)");
+
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Put a modest StatusText note when a spec §3 shortcut resolves to an
+    /// AKAPEN_ACT_* whose real UI is scheduled for M3-B/M3-C/M3-D. Consumes
+    /// the key (returns true) so the KeyDown path
+    /// marks it handled and it doesn't leak to a Button's auto-Click or the
+    /// OS menu.
+    /// </summary>
+    private bool AnnounceUnimplementedAction(string label)
+    {
+        SetStatus($"{label}: not implemented yet — coming in a later M3 chapter.");
+        return true;
+    }
+
+    private void ZoomBy(float factor)
+    {
+        _zoom = Math.Clamp(_zoom * factor, MinZoom, MaxZoom);
+        SetStatus($"View: {_zoom * 100.0f:0}%");
+    }
+
+    private void FitToWindow()
+    {
+        if (_imgWidth == 0 || _imgHeight == 0 || _surfaceWidth == 0 || _surfaceHeight == 0)
+        {
+            return;
+        }
+
+        float imageW = _imgWidth * _scaleFactor;
+        float imageH = _imgHeight * _scaleFactor;
+        _zoom = Math.Clamp(Math.Min(_surfaceWidth / imageW, _surfaceHeight / imageH), MinZoom, MaxZoom);
+        _panX = 0.0f;
+        _panY = 0.0f;
+        SetStatus($"View: fit ({_zoom * 100.0f:0}%)");
+    }
+
+    /// <summary>
+    /// Whether the currently-focused element is a text-editing control
+    /// (Codex Ch.9 review, Medium). Fed straight into <c>akapen_resolve_key</c>'s
+    /// <c>text_editing</c> parameter so the core key map returns
+    /// AKAPEN_ACT_NONE while the user is typing — the same B15/B21 guard the
+    /// mac shell's <c>textInputGuards()</c> supplies. AutoSuggestBox and
+    /// editable ComboBox compose onto an inner TextBox, so focus already
+    /// lands on the TextBox itself and is covered here without a separate
+    /// case.
     /// </summary>
     private bool IsTextInputFocused()
     {
         var xamlRoot = this.Content?.XamlRoot;
         if (xamlRoot is null) return false;
         var focused = FocusManager.GetFocusedElement(xamlRoot);
-        // AutoSuggestBox / editable ComboBox compose onto an inner TextBox,
-        // so focus already lands on the TextBox itself and is covered here
-        // without a separate case.
         return focused is TextBox or RichEditBox or PasswordBox;
-    }
-
-    private void AddRootAccelerator(
-        VirtualKey key,
-        VirtualKeyModifiers mods,
-        Windows.Foundation.TypedEventHandler<KeyboardAccelerator, KeyboardAcceleratorInvokedEventArgs> handler)
-    {
-        var acc = new KeyboardAccelerator { Key = key, Modifiers = mods };
-        acc.Invoked += handler;
-        RootGrid.KeyboardAccelerators.Add(acc);
     }
 }

@@ -4,12 +4,34 @@
 // intent to the engine and exposes the composited image for display.
 
 import AkapenKit
+import AkapenUIContract
 import AppKit
 import Foundation
 import SwiftUI
 
+enum CanvasCommand: Equatable {
+    case draw
+    case pan
+    case zoomIn
+    case zoomOut
+    case rotateLeft
+    case rotateRight
+    case fit
+    case actualSize
+}
+
+/// Portable UI command IDs shared by the Mac dock and future Windows/VEDA
+/// adapters. The Mac shell currently maps these to SwiftUI actions/popovers.
+enum AkapenStyleCommand: String, CaseIterable {
+    case brushSize = "style.size"
+    case color = "style.color"
+    case pressure = "style.pressure"
+    case opacity = "style.opacity"
+}
+
 @MainActor
 final class AppState: ObservableObject {
+    @Published private(set) var workspacePhase: WorkspacePhase = .empty
     @Published var engine: AkapenEngine?
     @Published var currentURL: URL?
     @Published var siblings: [URL] = []
@@ -20,9 +42,16 @@ final class AppState: ObservableObject {
     /// パレット外の色を選んだ場合は nil になる。
     @Published var selectedColorHex: String? = AkapenPalette.defaultColor.hex
     @Published var pressureCurve: AkapenPressureCurve = .normal
+    /// The core currently renders strokes opaque. Keep the portable value in
+    /// shell state so a future opacity API can be wired without changing the
+    /// dock contract; the control remains disabled until then.
+    @Published var opacity: Double = 1
     /// Raised when the core reports a constant-pressure stroke (spec §5.4).
     @Published var pressureWarning = false
     @Published var statusText = "Open an image to begin."
+    @Published private(set) var canUndo = false
+    @Published private(set) var canRedo = false
+    @Published var canvasCommand: CanvasCommand?
 
     /// このフレームに未保存の描き込み(完了ストローク)があるか。フレーム切替時の
     /// 自動保存(§4.5)の判定に使う。C ABI はストローク数を公開しないため、シェル側で
@@ -48,8 +77,41 @@ final class AppState: ObservableObject {
     let supportedExts: Set<String> = ["png", "jpg", "jpeg", "webp", "bmp"]
 
     func open(url: URL) {
+        workspacePhase = .loading
+        Task { @MainActor in
+            await Task.yield()
+            finishOpen(url: url)
+        }
+    }
+
+    func openFolder(url: URL) {
+        let items = (try? FileManager.default.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: nil)) ?? []
+        guard let first = items
+            .filter({ supportedExts.contains($0.pathExtension.lowercased()) })
+            .sorted(by: { naturalLess($0.lastPathComponent, $1.lastPathComponent) })
+            .first
+        else {
+            statusText = "このフォルダに対応画像がありません。"
+            workspacePhase = engine == nil ? .empty : .loaded
+            return
+        }
+        open(url: first)
+    }
+
+    func openDroppedURL(_ url: URL) {
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            openFolder(url: url)
+        } else {
+            open(url: url)
+        }
+    }
+
+    private func finishOpen(url: URL) {
         guard let e = AkapenEngine(imagePath: url.path) else {
             statusText = "Could not open \(url.lastPathComponent)."
+            workspacePhase = engine == nil ? .empty : .loaded
             return
         }
         engine = e
@@ -58,8 +120,10 @@ final class AppState: ObservableObject {
         loadSiblings(of: url)
         pressureWarning = false
         hasUnsavedStrokes = false
+        refreshHistory()
         let (w, h) = e.size
         statusText = "\(url.lastPathComponent) — \(w)×\(h)"
+        workspacePhase = .loaded
         revision += 1
     }
 
@@ -87,12 +151,33 @@ final class AppState: ObservableObject {
         if phase == .up {
             pressureWarning = e.pressureStuck
             hasUnsavedStrokes = true // 1ストローク完了 = このフレームは要保存
+            refreshHistory()
         }
         revision += 1
     }
 
-    func undo() { engine?.undo(); revision += 1 }
-    func redo() { engine?.redo(); revision += 1 }
+    func undo() {
+        guard let e = engine, e.canUndo else { return }
+        e.undo()
+        refreshHistory()
+        revision += 1
+    }
+
+    func redo() {
+        guard let e = engine, e.canRedo else { return }
+        e.redo()
+        refreshHistory()
+        revision += 1
+    }
+
+    func requestCanvas(_ command: CanvasCommand) {
+        canvasCommand = command
+    }
+
+    private func refreshHistory() {
+        canUndo = engine?.canUndo ?? false
+        canRedo = engine?.canRedo ?? false
+    }
 
     /// 右側パレットのスウォッチをタップしたときの選択(spec 2026-07-11)。
     func selectColor(hex: String) {
@@ -106,6 +191,17 @@ final class AppState: ObservableObject {
     func setArbitraryColor(_ c: Color) {
         color = c
         selectedColorHex = nil
+        applyToolState()
+    }
+
+    /// Hex is the portable color editing contract. The current C ABI accepts
+    /// RGB and forces alpha opaque, so an optional alpha suffix is displayed
+    /// but safely ignored by `packedRGBA` until the core exposes it.
+    func setColorHex(_ hex: String) {
+        let normalized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Color.isValidHex(normalized) else { return }
+        color = Color(hex: normalized)
+        selectedColorHex = normalized.hasPrefix("#") ? normalized.uppercased() : "#" + normalized.uppercased()
         applyToolState()
     }
 
@@ -126,6 +222,7 @@ final class AppState: ObservableObject {
         do {
             try e.export(toDir: dir.path, stem: stem)
             hasUnsavedStrokes = false
+            refreshHistory()
             // フォールバックが起きたときは、成功メッセージがそれを上書きして
             // 消してしまわないよう同じ statusText に警告を合流させる(Codex
             // レビュー指摘: 警告が save 成功で見えなくなっていた)。

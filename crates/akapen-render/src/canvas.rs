@@ -222,6 +222,7 @@ pub struct GpuCanvas {
     stroke_pipeline_baked: StrokePipeline,
     background: BackgroundTexture,
     baked: BakedTexture,
+    backdrop: wgpu::Color,
     /// Natural (image) size — the baked texture and the ViewTransform's
     /// `buffer_w`/`buffer_h` both come from here, independent of the (possibly
     /// zoomed/panned) on-screen surface size in `sr.config`.
@@ -230,6 +231,33 @@ pub struct GpuCanvas {
 }
 
 impl GpuCanvas {
+    /// Replaces only document-sized GPU resources while preserving the
+    /// surface, adapter, device, queue, and shader pipelines. Frame-sequence
+    /// navigation uses this path to avoid a full DX12 re-attach per image.
+    pub fn replace_document<'a, I>(
+        &mut self,
+        background_rgba: &[u8],
+        buffer_w: u32,
+        buffer_h: u32,
+        committed: I,
+    ) where
+        I: DoubleEndedIterator<Item = CommittedStrokeRef<'a>>,
+    {
+        let device = &self.sr.renderer.device;
+        let queue = &self.sr.renderer.queue;
+        self.background = self.background_pipeline.set_background(
+            device,
+            queue,
+            background_rgba,
+            buffer_w,
+            buffer_h,
+        );
+        self.baked = BakedTexture::new(device, queue, buffer_w, buffer_h);
+        self.buffer_w = buffer_w;
+        self.buffer_h = buffer_h;
+        self.apply_bake(BakeDelta::Rebuild, committed);
+    }
+
     /// Attaches a GPU canvas to the surface described by `desc`, seeding it
     /// with the engine's background bitmap and its already-committed strokes.
     ///
@@ -280,6 +308,7 @@ impl GpuCanvas {
             stroke_pipeline_baked,
             background,
             baked,
+            backdrop: wgpu::Color::WHITE,
             buffer_w,
             buffer_h,
         };
@@ -316,6 +345,14 @@ impl GpuCanvas {
 
     pub fn buffer_size(&self) -> (u32, u32) {
         (self.buffer_w, self.buffer_h)
+    }
+
+    pub fn set_dark_backdrop(&mut self, dark: bool) {
+        self.backdrop = if dark {
+            wgpu::Color::BLACK
+        } else {
+            wgpu::Color::WHITE
+        };
     }
 
     /// A short human-readable line identifying the attached surface's actual
@@ -361,6 +398,7 @@ impl GpuCanvas {
             &self.stroke_pipeline_screen,
             wet,
             view,
+            self.backdrop,
         );
         self.sr.renderer.queue.present(frame);
     }
