@@ -19,8 +19,11 @@ to install .NET or Windows App Runtime.
 - A single touch drag pans when no pen is active; touch is rejected while a
   pen is down as the MVP palm-rejection policy.
 - `PageUp`/`PageDown` move through neighboring image files.
-- `Ctrl+S` exports the non-destructive three-file review set. Images default
-  to a `_review` folder beside the source; closing auto-saves once.
+- `Ctrl+S` exports the non-destructive review set. For an image under `hoge`,
+  the default folder is `hoge_review` beside the source: the flat PNG is kept
+  directly there, while the transparent stroke PNG and JSON are placed under
+  its `strokes` subfolder. The stroke PNG and JSON are deleted when Akapen
+  closes; the flat PNG and source image remain.
 
 ## Build and run on Windows
 
@@ -45,8 +48,9 @@ desktop compositor.
 
 For maintainers, `--interactive-smoke <directory>` runs in an interactive
 desktop session, sends real `HWND` mouse messages through the window procedure,
-and closes after auto-saving the three artifacts. It is a regression check, not
-a user-facing workflow.
+and closes after auto-saving the flat artifact plus transient stroke artifacts.
+It also verifies the transient cleanup path. It is a regression check, not a
+user-facing workflow.
 
 ## Product GUI contract
 

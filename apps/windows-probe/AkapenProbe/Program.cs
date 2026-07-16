@@ -42,8 +42,11 @@ internal static class Program
     // WM_MOUSEMOVE cannot dereference a freed engine.
     private static IntPtr s_engine = IntPtr.Zero;
     private static string s_outDir = "";
+    private static string s_transientOutDir = "";
     private static string? s_customOutDir;
     private static string s_stem = "probe";
+    private static readonly HashSet<string> s_transientArtifacts = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> s_transientDirectories = new(StringComparer.OrdinalIgnoreCase);
     private static bool s_leftDown;
     private static bool s_dirty;
     private static bool s_isSaving;
@@ -428,9 +431,9 @@ internal static class Program
         //    blank canvases use a temp folder unless the caller specifies one.
         s_imagePath = imagePath ?? "";
         s_customOutDir = cliOutDir;
-        s_outDir = cliOutDir ?? (!string.IsNullOrEmpty(imagePath)
+        SetOutputDirectory(cliOutDir ?? (!string.IsNullOrEmpty(imagePath)
             ? ResolveOutputDirectory(imagePath)
-            : Path.Combine(Path.GetTempPath(), "akapen-review"));
+            : Path.Combine(Path.GetTempPath(), "akapen-review")));
         s_stem = !string.IsNullOrEmpty(imagePath)
             ? SanitizeStem(Path.GetFileNameWithoutExtension(imagePath))
             : (s_productMode ? "akapen" : "probe");
@@ -638,6 +641,7 @@ internal static class Program
         s_engine = IntPtr.Zero;  // block any stray late WndProc access before free
         if (finalEngine != IntPtr.Zero) akapen_free(finalEngine);
         s_shuttingDown = true;
+        CleanupTransientArtifacts();
         ClearPreloadedImages();
         if (s_brushCursor != IntPtr.Zero) { DestroyIcon(s_brushCursor); s_brushCursor = IntPtr.Zero; }
         if (s_canvasWindow != IntPtr.Zero) { DestroyWindow(s_canvasWindow); s_canvasWindow = IntPtr.Zero; }
@@ -797,8 +801,9 @@ internal static class Program
         }
     }
 
-    // Runs the 3-file export and reports the outcome to stdout. Callers own
-    // the "why we're saving" narration (explicit vs. auto-on-close).
+    // Writes the flat PNG into the review directory and keeps the JSON plus
+    // transparent stroke PNG in a per-output transient directory. The latter
+    // is removed when the product session ends.
     private static bool TrySave(string reasonTag)
     {
         if (s_engine == IntPtr.Zero)
@@ -808,17 +813,49 @@ internal static class Program
         }
         s_isSaving = true;
         UpdateProductMenu(s_mainWindow);
+        string[] before = Directory.Exists(s_transientOutDir)
+            ? Directory.GetFiles(s_transientOutDir)
+            : Array.Empty<string>();
+        Directory.CreateDirectory(s_transientOutDir);
+        s_transientDirectories.Add(s_transientOutDir);
+        string? movedFlat = null;
+        string[] created = Array.Empty<string>();
         try
         {
-            int rc = akapen_export_to_dir(s_engine, s_outDir, s_stem);
-            if (rc == 0)
+            int rc = akapen_export_to_dir(s_engine, s_transientOutDir, s_stem);
+            if (rc != 0)
             {
-                Console.WriteLine($"{LogPrefix} {reasonTag} saved 3 files to {s_outDir} (stem={s_stem})");
-                s_dirty = false;
-                if (!string.IsNullOrEmpty(s_imagePath)) s_dirtySessionDocuments.Remove(s_imagePath);
-                return true;
+                Console.WriteLine($"{LogPrefix} {reasonTag} save failed rc={rc} (dir='{s_transientOutDir}' stem='{s_stem}')");
+                return false;
             }
-            Console.WriteLine($"{LogPrefix} {reasonTag} save failed rc={rc} (dir='{s_outDir}' stem='{s_stem}')");
+
+            var beforeSet = new HashSet<string>(before, StringComparer.OrdinalIgnoreCase);
+            created = Directory.GetFiles(s_transientOutDir)
+                .Where(path => !beforeSet.Contains(path))
+                .ToArray();
+            string? flat = created.FirstOrDefault(path =>
+                ReviewOutputLayout.IsArtifactForStem(path, s_stem, "review", ".png"));
+            string[] strokes = created.Where(path =>
+                ReviewOutputLayout.IsArtifactForStem(path, s_stem, "strokes", ".png") ||
+                ReviewOutputLayout.IsArtifactForStem(path, s_stem, "strokes", ".json")).ToArray();
+            if (flat == null || strokes.Length != 2)
+                throw new IOException("The export did not produce the expected review artifacts.");
+
+            Directory.CreateDirectory(s_outDir);
+            string flatDestination = ReviewOutputLayout.ResolveCollisionFreeFlatPath(s_outDir, Path.GetFileName(flat));
+            File.Move(flat, flatDestination);
+            movedFlat = flatDestination;
+            foreach (string artifact in strokes) s_transientArtifacts.Add(artifact);
+            Console.WriteLine($"{LogPrefix} {reasonTag} saved flat PNG to {s_outDir} and transient stroke data to {s_transientOutDir} (stem={s_stem})");
+            s_dirty = false;
+            if (!string.IsNullOrEmpty(s_imagePath)) s_dirtySessionDocuments.Remove(s_imagePath);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            if (movedFlat != null) TryDeleteFile(movedFlat);
+            foreach (string path in created) TryDeleteFile(path);
+            Console.WriteLine($"{LogPrefix} {reasonTag} save failed: {ex.Message}");
             return false;
         }
         finally
@@ -853,6 +890,30 @@ internal static class Program
         if (s_mainWindow != IntPtr.Zero) InvalidateRect(s_mainWindow, IntPtr.Zero, false);
     }
 
+    private static void SetOutputDirectory(string outputDirectory)
+    {
+        s_outDir = outputDirectory;
+        s_transientOutDir = ReviewOutputLayout.ResolveTransientDirectory(outputDirectory);
+        s_transientDirectories.Add(s_transientOutDir);
+    }
+
+    private static void CleanupTransientArtifacts()
+    {
+        ReviewOutputLayout.DeleteTrackedArtifacts(s_transientArtifacts, s_transientDirectories);
+        s_transientArtifacts.Clear();
+        s_transientDirectories.Clear();
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
     // Trim characters that would trip resolve_target's collision-naming or
     // land somewhere unexpected on Windows. Keeps the stem printable.
     private static string SanitizeStem(string s)
@@ -881,7 +942,7 @@ internal static class Program
         {
             SaveLocationMode.SourceFolder => source,
             SaveLocationMode.CustomFolder when !string.IsNullOrWhiteSpace(s_customOutputPath) => s_customOutputPath,
-            _ => Path.Combine(source, s_outputFolderName),
+            _ => ReviewOutputLayout.ResolveSiblingReviewDirectory(imagePath, s_outputFolderName),
         };
     }
 
@@ -1477,7 +1538,7 @@ internal static class Program
         }
         s_imagePath = path;
         RebuildImageSiblings(path);
-        s_outDir = s_customOutDir ?? ResolveOutputDirectory(path);
+        SetOutputDirectory(s_customOutDir ?? ResolveOutputDirectory(path));
         s_stem = SanitizeStem(Path.GetFileNameWithoutExtension(path));
         s_dirty = s_dirtySessionDocuments.Contains(path);
         s_activeTool = UiCommandId.Pen;
@@ -1910,7 +1971,7 @@ internal static class Program
                             CustomOutputPath = s_customOutputPath,
                         });
                         if (!string.IsNullOrEmpty(s_imagePath))
-                            s_outDir = s_customOutDir ?? ResolveOutputDirectory(s_imagePath);
+                            SetOutputDirectory(s_customOutDir ?? ResolveOutputDirectory(s_imagePath));
                         if (s_engine != IntPtr.Zero)
                             akapen_set_canvas_dark(s_engine, s_canvasBackdrop == CanvasBackdrop.Black ? 1 : 0);
                         RenderCurrentFrame();
