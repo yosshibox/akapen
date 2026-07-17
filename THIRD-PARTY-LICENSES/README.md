@@ -16,3 +16,5 @@ Policy (see the specification in `docs/` and `NOTICE`):
 At M0 the core (`akapen-core`, `akapen-io`) depends only on permissive Rust
 crates; there are no copyleft bundles yet. This file is the designated home so
 the placement is fixed before those components land.
+
+- [Fluent UI System Icons](fluentui-system-icons.txt) — MIT (Microsoft)。UIアイコン図形。
