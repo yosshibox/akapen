@@ -204,3 +204,41 @@ internal static class ReviewOutputLayoutTests
         if (!value) throw new InvalidOperationException(message);
     }
 }
+
+internal static class ImageFolderSelectionTests
+{
+    public static void Run()
+    {
+        ImageFolderSelectionResult denied = ImageFolderSelection.FindFirstSupportedImage(
+            @"C:\frames",
+            _ => throw new UnauthorizedAccessException("denied"),
+            StringComparer.OrdinalIgnoreCase);
+        Assert(denied.ImagePath == null && denied.ErrorMessage?.Contains("denied", StringComparison.Ordinal) == true,
+            "Explorer folder access failures are returned instead of escaping the window callback");
+
+        ImageFolderSelectionResult interrupted = ImageFolderSelection.FindFirstSupportedImage(
+            @"C:\frames",
+            _ => EnumerateThenFail(),
+            StringComparer.OrdinalIgnoreCase);
+        Assert(interrupted.ImagePath == null && interrupted.ErrorMessage?.Contains("disconnected", StringComparison.Ordinal) == true,
+            "lazy folder enumeration failures are returned instead of terminating Akapen");
+
+        ImageFolderSelectionResult selected = ImageFolderSelection.FindFirstSupportedImage(
+            @"C:\frames",
+            _ => new[] { @"C:\frames\10.png", @"C:\frames\02.png", @"C:\frames\notes.txt" },
+            StringComparer.OrdinalIgnoreCase);
+        Assert(selected.ImagePath == @"C:\frames\02.png" && selected.ErrorMessage == null,
+            "the first supported image is selected deterministically");
+    }
+
+    private static IEnumerable<string> EnumerateThenFail()
+    {
+        yield return @"C:\frames\01.png";
+        throw new IOException("disconnected");
+    }
+
+    private static void Assert(bool value, string message)
+    {
+        if (!value) throw new InvalidOperationException(message);
+    }
+}

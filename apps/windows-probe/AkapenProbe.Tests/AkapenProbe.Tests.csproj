@@ -11,6 +11,7 @@
     <Compile Include="..\AkapenProbe\Ui\UiContracts.cs" Link="UiContracts.cs" />
     <Compile Include="..\AkapenProbe\Ui\UiSettings.cs" Link="UiSettings.cs" />
     <Compile Include="..\AkapenProbe\Ui\ReviewOutputLayout.cs" Link="ReviewOutputLayout.cs" />
+    <Compile Include="..\AkapenProbe\Ui\ImageFolderSelection.cs" Link="ImageFolderSelection.cs" />
     <Compile Include="..\AkapenProbe\Ui\DockLayout.cs" Link="DockLayout.cs" />
     <Compile Include="..\AkapenProbe\Ui\SvgIconCatalog.cs" Link="SvgIconCatalog.cs" />
     <Compile Include="..\AkapenProbe\Ui\SvgPathParser.cs" Link="SvgPathParser.cs" />
