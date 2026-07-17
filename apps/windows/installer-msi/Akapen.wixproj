@@ -1,7 +1,10 @@
 <Project Sdk="WixToolset.Sdk/5.0.2">
 
   <PropertyGroup>
-    <OutputName>Akapen-1.1.2-win-x64</OutputName>
+    <!-- Build-Msi.ps1 が -p:OutputName / -p:Platform で上書きする。単体ビルド時の
+         既定は x64。arm64 は -p:Platform=arm64 で WiX の -arch arm64 に伝わる。 -->
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+    <OutputName Condition="'$(OutputName)' == ''">Akapen-1.2.0-win-$(Platform)</OutputName>
     <OutputType>Package</OutputType>
     <!-- publish フォルダの場所。ビルド時に -p:PublishDir=... で上書き可能。 -->
     <PublishDir Condition="'$(PublishDir)' == ''">$(MSBuildThisFileDirectory)..\AkapenProbe\bin\Release\net8.0\win-x64\publish</PublishDir>

@@ -3,7 +3,7 @@ using System.Xml.Linq;
 
 namespace AkapenProbe.Ui;
 
-public sealed record SvgIcon(string Id, string PathData, IReadOnlyList<SvgSegment> Segments);
+public sealed record SvgIcon(string Id, string PathData, IReadOnlyList<SvgSegment> Segments, bool Filled);
 
 /// <summary>Loads the canonical embedded SVG sprite without platform graphics dependencies.</summary>
 public static class SvgIconCatalog
@@ -30,7 +30,11 @@ public static class SvgIconCatalog
             {
                 string id = (string)symbol.Attribute("id")!;
                 string pathData = string.Join(" ", symbol.Elements(svg + "path").Select(path => (string)path.Attribute("d")!));
-                return new SvgIcon(id, pathData, SvgPathParser.Parse(pathData));
+                // V1.2 (Fluent UI System Icons): sprite symbols declare
+                // fill="currentColor" — these are monochrome FILL paths
+                // (nonzero rule), not stroke outlines.
+                bool filled = !string.Equals((string?)symbol.Attribute("fill"), "none", StringComparison.Ordinal);
+                return new SvgIcon(id, pathData, SvgPathParser.Parse(pathData), filled);
             },
             StringComparer.Ordinal);
     }

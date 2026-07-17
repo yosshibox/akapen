@@ -143,7 +143,12 @@ internal sealed class NativeUiRenderer : IDisposable
         }
 
         EmptyStateLayout empty = DockLayout.EmptyState(width, height, _scale);
-        int titleY = Math.Max(Px(38), empty.FolderButton.Y - Px(82));
+        // V1.2.0: the 朱の一筆 pixel logo sits above the title, matching Mac.
+        int logo = Px(64);
+        int logoGap = Px(12);
+        int titleY = Math.Max(Px(38) + logo + logoGap, empty.FolderButton.Y - Px(82));
+        int logoY = Math.Max(Px(20), titleY - logoGap - logo);
+        DrawLogo(new UiRect(content.X + (content.Width - logo) / 2, logoY, logo, logo));
         DrawTextCentered("Akapen", new UiRect(content.X, titleY, content.Width, Px(34)), 24, Text, bold: true);
         DrawTextCentered("画像フォルダを選ぶか、画像をドロップして始めます。",
             new UiRect(content.X, titleY + Px(38), content.Width, Px(24)), 13, Muted);
@@ -224,9 +229,56 @@ internal sealed class NativeUiRenderer : IDisposable
         }, RgbaToArgb(rgba));
     }
 
+    // V1.2.0: the embedded 朱の一筆 pixel logo (assets/app-icon/akapen-pixel-source.png)
+    // decoded once via GDI+ and drawn at the requested (DPI-scaled) size.
+    private static readonly object s_logoLock = new();
+    private static IntPtr s_logoBitmap = IntPtr.Zero;
+    private static bool s_logoLoaded;
+
+    private static IntPtr LogoBitmap()
+    {
+        lock (s_logoLock)
+        {
+            if (s_logoLoaded) return s_logoBitmap;
+            s_logoLoaded = true;
+            try
+            {
+                var assembly = typeof(NativeUiRenderer).Assembly;
+                string? resource = assembly.GetManifestResourceNames()
+                    .FirstOrDefault(name => name.EndsWith("akapen-pixel-source.png", StringComparison.Ordinal));
+                if (resource is null) return s_logoBitmap;
+                using Stream stream = assembly.GetManifestResourceStream(resource)!;
+                using var buffer = new MemoryStream();
+                stream.CopyTo(buffer);
+                byte[] bytes = buffer.ToArray();
+                // SHCreateMemStream returns an IStream GDI+ can decode. Keep it
+                // alive for the process lifetime alongside the decoded image.
+                IntPtr comStream = SHCreateMemStream(bytes, (uint)bytes.Length);
+                if (comStream == IntPtr.Zero) return s_logoBitmap;
+                if (GdipLoadImageFromStream(comStream, out IntPtr image) == 0)
+                    s_logoBitmap = image;
+            }
+            catch
+            {
+                // A missing or unreadable logo must never crash the empty screen;
+                // the title text alone remains a valid fallback.
+            }
+            return s_logoBitmap;
+        }
+    }
+
+    private void DrawLogo(UiRect bounds)
+    {
+        IntPtr bitmap = LogoBitmap();
+        if (bitmap == IntPtr.Zero) return;
+        GdipSetInterpolationMode(_graphics, 7); // HighQualityBicubic
+        GdipDrawImageRectI(_graphics, bitmap, bounds.X, bounds.Y, bounds.Width, bounds.Height);
+    }
+
     private void DrawSvg(SvgIcon icon, UiRect bounds, uint color, float strokeWidth)
     {
-        if (GdipCreatePath(0, out IntPtr path) != 0) return;
+        // Fluent fill icons use the nonzero winding rule (SVG default).
+        if (GdipCreatePath(icon.Filled ? 1 : 0, out IntPtr path) != 0) return;
         try
         {
             float scale = Math.Min(bounds.Width, bounds.Height) / (float)SvgIconCatalog.ViewBoxSize;
@@ -254,11 +306,20 @@ internal sealed class NativeUiRenderer : IDisposable
                         GdipClosePathFigure(path); cx = sx; cy = sy; break;
                 }
             }
-            IntPtr pen = CreatePen(color, Math.Max(1.25f, strokeWidth * scale));
-            GdipSetPenLineCap197819(pen, 2, 2, 2); // round caps
-            GdipSetPenLineJoin(pen, 2); // round joins
-            GdipDrawPath(_graphics, pen, path);
-            GdipDeletePen(pen);
+            if (icon.Filled)
+            {
+                IntPtr brush = CreateBrush(color);
+                GdipFillPath(_graphics, brush, path);
+                GdipDeleteBrush(brush);
+            }
+            else
+            {
+                IntPtr pen = CreatePen(color, Math.Max(1.25f, strokeWidth * scale));
+                GdipSetPenLineCap197819(pen, 2, 2, 2); // round caps
+                GdipSetPenLineJoin(pen, 2); // round joins
+                GdipDrawPath(_graphics, pen, path);
+                GdipDeletePen(pen);
+            }
         }
         finally { GdipDeletePath(path); }
     }
@@ -396,6 +457,7 @@ internal sealed class NativeUiRenderer : IDisposable
     [DllImport("gdiplus.dll")] private static extern int GdipAddPathLine(IntPtr path, float x1, float y1, float x2, float y2);
     [DllImport("gdiplus.dll")] private static extern int GdipAddPathBezier(IntPtr path, float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4);
     [DllImport("gdiplus.dll")] private static extern int GdipDrawPath(IntPtr graphics, IntPtr pen, IntPtr path);
+    [DllImport("gdiplus.dll")] private static extern int GdipFillPath(IntPtr graphics, IntPtr brush, IntPtr path);
     [DllImport("gdiplus.dll", CharSet = CharSet.Unicode)] private static extern int GdipCreateFontFamilyFromName(string name, IntPtr collection, out IntPtr family);
     [DllImport("gdiplus.dll")] private static extern int GdipGetGenericFontFamilySansSerif(out IntPtr family);
     [DllImport("gdiplus.dll")] private static extern int GdipDeleteFontFamily(IntPtr family);
@@ -409,4 +471,6 @@ internal sealed class NativeUiRenderer : IDisposable
     [DllImport("gdiplus.dll")] private static extern int GdipSetInterpolationMode(IntPtr graphics, int mode);
     [DllImport("gdiplus.dll")] private static extern int GdipSetClipRectI(IntPtr graphics, int x, int y, int width, int height, int combineMode);
     [DllImport("gdiplus.dll")] private static extern int GdipResetClip(IntPtr graphics);
+    [DllImport("gdiplus.dll")] private static extern int GdipLoadImageFromStream(IntPtr stream, out IntPtr image);
+    [DllImport("shlwapi.dll")] private static extern IntPtr SHCreateMemStream([In] byte[] data, uint length);
 }

@@ -14,7 +14,7 @@
   -->
   <Package Name="Akapen"
            Manufacturer="Yoshino Yoshikawa"
-           Version="1.1.2.0"
+           Version="1.2.0.0"
            UpgradeCode="A4EF9BDF-CA54-4869-9B3F-7CD2B4342375"
            Scope="perUser"
            Codepage="932"

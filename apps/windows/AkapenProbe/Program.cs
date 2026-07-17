@@ -80,6 +80,10 @@ internal static class Program
     private static DateTime s_lastPenInputUtc = DateTime.MinValue;
     private static bool s_pressureFallbackWarned;
     private static bool s_automatedSmoke;
+    // V1.2.0: --show-settings opens the settings dialog automatically shortly
+    // after the window appears, so the grouped-card layout can be screenshotted
+    // headlessly from a desktop session (GUI automation over SSH is unreliable).
+    private static bool s_showSettingsOnStart;
     private static DockSide s_dockSide = DockSide.Right;
     private static string s_settingsPath = UiSettingsStore.DefaultPath();
     private static CanvasBackdrop s_canvasBackdrop = CanvasBackdrop.White;
@@ -144,6 +148,10 @@ internal static class Program
             {
                 s_automatedSmoke = true;
                 if (i + 1 < args.Length && !args[i + 1].StartsWith("--")) cliOutDir = args[++i];
+            }
+            else if (a == "--show-settings")
+            {
+                s_showSettingsOnStart = true;
             }
             else if (a == "--headless-export")
             {
@@ -625,6 +633,11 @@ internal static class Program
                 if (framesRendered == 23) PostMessage(hwnd, WM_MOUSEMOVE, (IntPtr)1, MakeLParam(340, 280));
                 if (framesRendered == 24) PostMessage(hwnd, WM_LBUTTONUP, IntPtr.Zero, MakeLParam(340, 280));
                 if (framesRendered == 80) PostMessage(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            }
+            if (s_showSettingsOnStart && framesRendered == 3)
+            {
+                s_showSettingsOnStart = false;
+                ShowSettingsDialog(hwnd);
             }
             bool quit = false;
             while (PeekMessage(out MSG msg, IntPtr.Zero, 0, 0, PM_REMOVE))
@@ -2169,6 +2182,24 @@ internal static class Program
     private static IntPtr s_settingsHeaderFont = IntPtr.Zero;
     private static IntPtr s_settingsNoteFont = IntPtr.Zero;
     private static readonly IntPtr s_settingsSurfaceBrush = GetStockObject(WHITE_BRUSH);
+    // V1.2.0: System Settings / Mac grouped-form look. Each section sits on a
+    // light grey rounded card (#F5F3F1) drawn over a white window surface, and
+    // the controls on it get the same background so they read as one card.
+    private const uint SettingsCardColor = 0x00F1F3F5;   // COLORREF 0x00BBGGRR of #F5F3F1
+    private const uint SettingsCardBorderColor = 0x00DDE2E7; // #E7E2DD
+    private static readonly IntPtr s_settingsCardBrush = CreateSolidBrush(SettingsCardColor);
+    private static readonly IntPtr s_settingsCardPen = CreatePen(0 /*PS_SOLID*/, 1, SettingsCardBorderColor);
+
+    // Card rectangles in layout DIP: (x, y, width, height). One per section, in
+    // the same order as the WM_CREATE control layout below.
+    private static readonly (int X, int Y, int W, int H)[] s_settingsCards =
+    {
+        (14, 12, 558, 138),   // ショートカット
+        (14, 154, 558, 90),   // ペン
+        (14, 248, 558, 68),   // キャンバス
+        (14, 320, 558, 68),   // 画像切り替え
+        (14, 392, 558, 198),  // 保存先
+    };
 
     private static IntPtr SettingsWndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
@@ -2180,27 +2211,23 @@ internal static class Program
                 s_settingsFont = CreateSettingsFont(scale, 15, bold: false);
                 s_settingsHeaderFont = CreateSettingsFont(scale, 16, bold: true);
                 s_settingsNoteFont = CreateSettingsFont(scale, 13, bold: false);
-                const int L = 28, W = 528, IndentW = 504;
+                const int L = 28, IndentW = 504;
 
                 Header(hWnd, "ショートカット", L, 20);
                 CreateSettingsControl(hWnd, "BUTTON", "Photoshop 準拠（既定）", BS_AUTORADIOBUTTON | BS_GROUP | WS_TABSTOP, L + 4, 48, IndentW, 24, SettingsKeymapPhotoshopId);
                 Note(hWnd, "B=ブラシ、Ctrl+Shift+Z=やり直し、Ctrl+1=100%、R / Shift+R=回転（15°）", L + 24, 72);
                 CreateSettingsControl(hWnd, "BUTTON", "CLIP STUDIO PAINT 準拠", BS_AUTORADIOBUTTON | WS_TABSTOP, L + 4, 96, IndentW, 24, SettingsKeymapClipStudioId);
                 Note(hWnd, "P=ペン、Ctrl+Y=やり直し、- / ^=回転（15°）", L + 24, 120);
-                Separator(hWnd, L, 150, W);
 
                 Header(hWnd, "ペン", L, 162);
                 CreateSettingsControl(hWnd, "BUTTON", "筆圧を使う（線の太さに反映する）", BS_AUTOCHECKBOX | WS_TABSTOP, L + 4, 190, IndentW, 24, SettingsPressureId);
                 Note(hWnd, "オフのときは筆圧を無視し、一定の太さで描きます", L + 24, 214);
-                Separator(hWnd, L, 240, W);
 
                 Header(hWnd, "キャンバス", L, 252);
                 CreateSettingsControl(hWnd, "BUTTON", "画像の範囲外を黒にする", BS_AUTOCHECKBOX | WS_TABSTOP, L + 4, 280, IndentW, 24, SettingsDarkCanvasId);
-                Separator(hWnd, L, 316, W);
 
                 Header(hWnd, "画像切り替え", L, 328);
                 CreateSettingsControl(hWnd, "BUTTON", "左右矢印キーで切り替える前に自動保存する", BS_AUTOCHECKBOX | WS_TABSTOP, L + 4, 356, IndentW, 24, SettingsAutoSaveId);
-                Separator(hWnd, L, 392, W);
 
                 Header(hWnd, "保存先", L, 404);
                 CreateSettingsControl(hWnd, "BUTTON", "画像と同じ階層に新規フォルダを作る", BS_AUTORADIOBUTTON | BS_GROUP | WS_TABSTOP, L + 4, 432, IndentW, 24, SettingsSiblingFolderId);
@@ -2229,14 +2256,30 @@ internal static class Program
             // A white surface with transparent label/checkbox backgrounds is
             // most of the difference between the old battleship-gray dialog
             // and a current-Windows settings page.
+            // Controls sit on the grey cards, so their backgrounds must match the
+            // card color rather than the white window surface. (Themed push
+            // buttons paint themselves and ignore this; the OK/キャンセル row lives
+            // on the white footer.)
             case WM_CTLCOLORSTATIC:
             case WM_CTLCOLORBTN:
                 SetBkMode(wParam, 1 /*TRANSPARENT*/);
-                return s_settingsSurfaceBrush;
+                SetBkColor(wParam, SettingsCardColor);
+                return s_settingsCardBrush;
             case WM_ERASEBKGND:
             {
                 GetClientRect(hWnd, out RECT rc);
                 FillRect(wParam, ref rc, s_settingsSurfaceBrush);
+                float scale = UiScale(hWnd);
+                int radius = (int)MathF.Round(20 * scale);
+                IntPtr oldBrush = SelectObject(wParam, s_settingsCardBrush);
+                IntPtr oldPen = SelectObject(wParam, s_settingsCardPen);
+                foreach ((int cx, int cy, int cw, int ch) in s_settingsCards)
+                    RoundRect(wParam,
+                        (int)(cx * scale), (int)(cy * scale),
+                        (int)((cx + cw) * scale), (int)((cy + ch) * scale),
+                        radius, radius);
+                SelectObject(wParam, oldPen);
+                SelectObject(wParam, oldBrush);
                 return (IntPtr)1;
             }
             case WM_COMMAND:
@@ -2285,9 +2328,6 @@ internal static class Program
 
     private static void Note(IntPtr parent, string text, int x, int y) =>
         CreateSettingsControl(parent, "STATIC", text, 0, x, y, 500, 20, 0, s_settingsNoteFont);
-
-    private static void Separator(IntPtr parent, int x, int y, int width) =>
-        CreateSettingsControl(parent, "STATIC", "", 0x10 /*SS_ETCHEDHORZ*/, x, y, width, 1, 0);
 
     private static IntPtr CreateSettingsControl(IntPtr parent, string className, string text, uint style,
         int x, int y, int width, int height, int id, IntPtr font = default)
@@ -2736,6 +2776,18 @@ internal static class Program
 
     [DllImport("gdi32.dll")]
     private static extern int SetBkMode(IntPtr hdc, int mode);
+
+    [DllImport("gdi32.dll")]
+    private static extern uint SetBkColor(IntPtr hdc, uint color);
+
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr CreateSolidBrush(uint color);
+
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr CreatePen(int style, int width, uint color);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool RoundRect(IntPtr hdc, int left, int top, int right, int bottom, int ellipseWidth, int ellipseHeight);
 
     [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr CreateFont(int height, int width, int escapement, int orientation,
