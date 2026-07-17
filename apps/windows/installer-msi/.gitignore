@@ -1,0 +1,6 @@
+# WiX / MSBuild ビルド出力
+bin/
+obj/
+
+# EULA-ja.txt から自動生成する (Make-LicenseRtf.ps1)
+License.rtf

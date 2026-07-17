@@ -1,0 +1,24 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+
+  <PropertyGroup>
+    <OutputName>Akapen-1.1.2-win-x64</OutputName>
+    <OutputType>Package</OutputType>
+    <!-- publish フォルダの場所。ビルド時に -p:PublishDir=... で上書き可能。 -->
+    <PublishDir Condition="'$(PublishDir)' == ''">$(MSBuildThisFileDirectory)..\AkapenProbe\bin\Release\net8.0\win-x64\publish</PublishDir>
+    <DefineConstants>PublishDir=$(PublishDir)</DefineConstants>
+    <!--
+      per-user (%LOCALAPPDATA%) インストールでは、自動 harvest したファイル
+      コンポーネントが HKCU キーパスを持たないため ICE38/ICE43/ICE57/ICE64 が
+      誤検知として発火する。per-user MSI では標準的な運用として、これらの
+      ICE 検証のみ抑止する (アンインストール時のファイル削除は MSI が
+      コンポーネント参照で管理するため実挙動は正しい)。
+    -->
+    <SuppressIces>ICE38;ICE43;ICE57;ICE64;ICE91</SuppressIces>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
+    <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
+  </ItemGroup>
+
+</Project>

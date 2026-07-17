@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <!--
+    Akapen per-user MSI installer.
+    - Payload: AkapenProbe の publish フォルダ一式 (Akapen.exe / akapen_native.dll /
+      manual\akapen-manual-ja.html など) を %LOCALAPPDATA%\Programs\Akapen へ配置。
+    - per-user (Scope="perUser") なので管理者権限なしでインストールできる。
+    - UpgradeCode 固定でメジャーアップグレード (上書き更新) 対応。
+    - スタートメニュー + デスクトップショートカット。
+    - WixUI_InstallDir + EULA-ja (License.rtf) 表示。/qn サイレント対応。
+  -->
+  <Package Name="Akapen"
+           Manufacturer="Yoshino Yoshikawa"
+           Version="1.1.2.0"
+           UpgradeCode="A4EF9BDF-CA54-4869-9B3F-7CD2B4342375"
+           Scope="perUser"
+           Codepage="932"
+           Compressed="yes">
+
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="より新しいバージョンの Akapen が既にインストールされています。" />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- インストール先: %LOCALAPPDATA%\Programs\Akapen -->
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Akapen" />
+      </Directory>
+    </StandardDirectory>
+
+    <!-- publish フォルダを丸ごと harvest してコンポーネント化する。 -->
+    <Files Directory="INSTALLFOLDER" Include="$(PublishDir)\**" />
+
+    <!-- ショートカット + アンインストール用の HKCU キーパス。 -->
+    <StandardDirectory Id="ProgramMenuFolder" />
+    <StandardDirectory Id="DesktopFolder" />
+    <Component Directory="INSTALLFOLDER" Id="AppShortcuts" Guid="B57E76DB-A92A-420A-BD2F-C20DFA148AA3">
+      <RegistryValue Root="HKCU" Key="Software\Akapen"
+                     Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+      <!-- アンインストール時に空フォルダも含めてインストール先を再帰削除する。 -->
+      <RegistryValue Root="HKCU" Key="Software\Akapen"
+                     Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" />
+      <util:RemoveFolderEx On="uninstall" Property="AKAPEN_INSTALLDIR" />
+      <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder"
+                Name="Akapen" Description="Akapen"
+                Target="[INSTALLFOLDER]Akapen.exe" WorkingDirectory="INSTALLFOLDER"
+                Icon="AkapenIcon.exe" />
+      <Shortcut Id="DesktopShortcut" Directory="DesktopFolder"
+                Name="Akapen" Description="Akapen"
+                Target="[INSTALLFOLDER]Akapen.exe" WorkingDirectory="INSTALLFOLDER"
+                Icon="AkapenIcon.exe" />
+    </Component>
+
+    <!-- 「アプリと機能」の一覧アイコン。 -->
+    <Icon Id="AkapenIcon.exe" SourceFile="$(PublishDir)\Akapen.exe" />
+    <Property Id="ARPPRODUCTICON" Value="AkapenIcon.exe" />
+
+    <!-- RemoveFolderEx が参照する、レジストリに保存したインストール先パス。 -->
+    <Property Id="AKAPEN_INSTALLDIR">
+      <RegistrySearch Id="AkapenInstallDirSearch" Root="HKCU"
+                      Key="Software\Akapen" Name="InstallDir" Type="raw" />
+    </Property>
+
+    <!-- EULA 表示 (日本語 RTF)。 -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+
+  </Package>
+</Wix>
