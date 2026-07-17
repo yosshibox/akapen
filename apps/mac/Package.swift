@@ -41,6 +41,14 @@ let package = Package(
         .executableTarget(
             name: "AkapenApp",
             dependencies: ["AkapenKit", "CAkapen", "AkapenUIContract"],
+            // Resources/akapen-manual-ja.html is a synced copy of
+            // docs/manual/akapen-manual-ja.html (SwiftPM resources must live
+            // inside the target); Resources/akapen-icon.png mirrors
+            // assets/app-icon/akapen-pixel-source.png.
+            resources: [
+                .copy("Resources/akapen-manual-ja.html"),
+                .copy("Resources/akapen-icon.png"),
+            ],
             linkerSettings: linkRust
         ),
 
