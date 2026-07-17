@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Akapen ユーザーマニュアル</title>
+<style>
+  :root {
+    --ink: #282522; --muted: #716b66; --accent: #c84232;
+    --surface: #faf9f7; --card: #ffffff; --border: #d6cfc8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--surface); color: var(--ink);
+    font-family: "Yu Gothic UI", "Hiragino Kaku Gothic ProN", "Segoe UI", sans-serif;
+    line-height: 1.8; font-size: 15px;
+  }
+  header {
+    background: var(--card); border-bottom: 3px solid var(--accent);
+    padding: 28px 24px 20px;
+  }
+  header h1 { margin: 0 0 4px; font-size: 26px; }
+  header h1 span { color: var(--accent); }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+  main { max-width: 880px; margin: 0 auto; padding: 24px 24px 64px; }
+  nav.toc {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px 24px; margin-bottom: 28px;
+  }
+  nav.toc strong { display: block; margin-bottom: 6px; }
+  nav.toc a { color: var(--accent); text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+  nav.toc ol { margin: 0; padding-left: 22px; columns: 2; }
+  h2 {
+    font-size: 20px; margin: 40px 0 12px; padding-bottom: 6px;
+    border-bottom: 2px solid var(--border);
+  }
+  h2 .num { color: var(--accent); margin-right: 8px; }
+  h3 { font-size: 16px; margin: 24px 0 8px; }
+  table {
+    border-collapse: collapse; width: 100%; background: var(--card);
+    font-size: 14px; margin: 12px 0;
+  }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f1ede8; }
+  kbd {
+    display: inline-block; background: #f1ede8; border: 1px solid var(--border);
+    border-bottom-width: 2px; border-radius: 4px; padding: 1px 7px;
+    font-family: Consolas, monospace; font-size: 12.5px; white-space: nowrap;
+  }
+  code {
+    background: #f1ede8; border-radius: 4px; padding: 1px 6px;
+    font-family: Consolas, monospace; font-size: 13px;
+  }
+  pre {
+    background: #2d2a27; color: #f2efe9; border-radius: 8px;
+    padding: 14px 18px; overflow-x: auto; font-size: 13px;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+  .note {
+    background: #fff7e8; border-left: 4px solid #d97706; border-radius: 0 6px 6px 0;
+    padding: 10px 16px; margin: 12px 0; font-size: 14px;
+  }
+  .tip {
+    background: #eef6ee; border-left: 4px solid #22b14c; border-radius: 0 6px 6px 0;
+    padding: 10px 16px; margin: 12px 0; font-size: 14px;
+  }
+  footer {
+    max-width: 880px; margin: 0 auto; padding: 16px 24px 40px;
+    color: var(--muted); font-size: 12.5px; border-top: 1px solid var(--border);
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>Akapen</span> ユーザーマニュアル</h1>
+  <p>対象バージョン: 1.1.2（Windows）｜最終更新: 2026-07-17</p>
+</header>
+<main>
+
+<p>Akapen（赤ペン）は、アニメ制作の作画監督・演出が、提出された作画（1枚絵・フレーム連番）に赤ペンの修正指示を入れ、元画像を壊さず別フォルダへ保存し、連番の次のカットへ流れるように移動するための軽量レビュー専用エディタです。</p>
+
+<nav class="toc">
+  <strong>目次</strong>
+  <ol>
+    <li><a href="#install">インストール</a></li>
+    <li><a href="#flow">基本の流れ</a></li>
+    <li><a href="#screen">画面構成</a></li>
+    <li><a href="#shortcut">ショートカット</a></li>
+    <li><a href="#touch">タッチ操作</a></li>
+    <li><a href="#pressure">筆圧</a></li>
+    <li><a href="#save">保存と出力ファイル</a></li>
+    <li><a href="#sequence">連番ナビゲーション</a></li>
+    <li><a href="#settings">設定一覧</a></li>
+    <li><a href="#about">バージョン情報・ライセンス</a></li>
+    <li><a href="#trouble">トラブルシューティング</a></li>
+  </ol>
+</nav>
+
+<h2 id="install"><span class="num">1.</span>インストール</h2>
+<ol>
+  <li><code>AkapenSetup-&lt;version&gt;-win-x64.exe</code> を実行します。</li>
+  <li>使用許諾契約書（EULA）を確認し、「同意してインストール」を押します。</li>
+  <li>既定では <code>%LOCALAPPDATA%\Programs\Akapen</code> にインストールされ、デスクトップとスタートメニューにショートカットが作られます。</li>
+</ol>
+<p>C ドライブの空き容量が少ない端末では、インストール先を指定できます:</p>
+<pre><code>AkapenSetup.exe --install-dir D:\Akapen</code></pre>
+<div class="note">展開スクリプト等の無人インストールでは <code>--accept-eula</code> を併用できます（使用許諾契約の条項はその場合も適用されます）。.NET ランタイムの別途インストールは不要です。</div>
+
+<h2 id="flow"><span class="num">2.</span>基本の流れ</h2>
+<ol>
+  <li><strong>開く</strong>: 起動画面で「画像を開くフォルダを選択」を押すか、画像ファイル／フォルダをウィンドウへドロップします（PNG / JPEG / WebP / BMP 対応）。</li>
+  <li><strong>描く</strong>: ペン（既定は赤）で修正指示を描き込みます。ペンタブレットの筆圧が線の太さに反映されます（既定オン。<a href="#pressure">§6</a>）。</li>
+  <li><strong>保存</strong>: <kbd>Ctrl</kbd>+<kbd>S</kbd> または「保存」。元画像は一切変更されず、既定では入力フォルダの隣の <code>&lt;フォルダ名&gt;_review</code> フォルダへ、朱入れを焼き込んだ PNG が保存されます。</li>
+  <li><strong>次へ</strong>: <kbd>→</kbd>（または <kbd>Page Down</kbd>）で同じフォルダの次の画像へ。未保存の描き込みがあれば自動保存してから移動します。</li>
+</ol>
+
+<h2 id="screen"><span class="num">3.</span>画面構成</h2>
+<table>
+  <tr><th>領域</th><th>内容</th></tr>
+  <tr><td>キャンバス（左）</td><td>画像と朱入れの表示・描画領域。</td></tr>
+  <tr><td>ナビゲーター（右ドック最上部）</td><td>画像全体のサムネイルに、現在表示している範囲が赤い枠で示されます。クリック／ドラッグでその位置へ移動。下の <kbd>−</kbd> / <kbd>+</kbd> と倍率表示でズーム（Photoshop のナビゲーターと同じ使い方）。</td></tr>
+  <tr><td>ツールボタン</td><td>矢印（操作なし）・ペン・消しゴム。</td></tr>
+  <tr><td>ブラシサイズフェーダー</td><td>クリック／ドラッグ、または <kbd>[</kbd> <kbd>]</kbd> でペン先サイズ（1〜50px）を変更。円形プレビューと px 値が連動。</td></tr>
+  <tr><td>カラーパレット</td><td>10色。クリックで描画色を変更。</td></tr>
+  <tr><td>ステータスバー（下）</td><td>ファイル名・表示倍率・ペン先サイズ・未保存状態。</td></tr>
+</table>
+
+<h2 id="shortcut"><span class="num">4.</span>ショートカット</h2>
+<p>キーマップは2つのプリセットから選べます（設定 → ショートカット）。既定は <strong>Photoshop 準拠</strong>です。</p>
+<table>
+  <tr><th>機能</th><th>Photoshop 準拠（既定）</th><th>CLIP STUDIO 準拠</th></tr>
+  <tr><td>ペン（ブラシ）</td><td><kbd>B</kbd> または <kbd>P</kbd></td><td><kbd>P</kbd></td></tr>
+  <tr><td>消しゴム</td><td><kbd>E</kbd></td><td><kbd>E</kbd></td></tr>
+  <tr><td>元に戻す</td><td><kbd>Ctrl</kbd>+<kbd>Z</kbd>（<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Z</kbd> も可）</td><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td></tr>
+  <tr><td>やり直し</td><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td><kbd>Ctrl</kbd>+<kbd>Y</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td></tr>
+  <tr><td>ブラシサイズ</td><td><kbd>[</kbd> / <kbd>]</kbd></td><td><kbd>[</kbd> / <kbd>]</kbd></td></tr>
+  <tr><td>ズームイン / アウト</td><td><kbd>↑</kbd> / <kbd>↓</kbd>、<kbd>Ctrl</kbd>+<kbd>=</kbd> / <kbd>Ctrl</kbd>+<kbd>-</kbd>、<kbd>+</kbd> / <kbd>-</kbd></td><td>同左</td></tr>
+  <tr><td>フィット表示</td><td><kbd>Ctrl</kbd>+<kbd>0</kbd>（<kbd>F</kbd> も可）</td><td>同左</td></tr>
+  <tr><td>100% 表示</td><td><kbd>Ctrl</kbd>+<kbd>1</kbd> / <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>0</kbd></td><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>0</kbd></td></tr>
+  <tr><td>ビュー回転（15°）</td><td><kbd>R</kbd>（右）/ <kbd>Shift</kbd>+<kbd>R</kbd>（左）</td><td><kbd>-</kbd>（左）/ <kbd>^</kbd>（右）</td></tr>
+  <tr><td>前 / 次の画像</td><td><kbd>←</kbd> / <kbd>→</kbd>、<kbd>Page Up</kbd> / <kbd>Page Down</kbd></td><td>同左</td></tr>
+  <tr><td>パン（手のひら）</td><td><kbd>Space</kbd> 押しながらドラッグ</td><td>同左</td></tr>
+  <tr><td>開く / 保存</td><td><kbd>Ctrl</kbd>+<kbd>O</kbd> / <kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>同左</td></tr>
+  <tr><td>設定</td><td><kbd>Ctrl</kbd>+<kbd>,</kbd></td><td>同左</td></tr>
+</table>
+<div class="note">Photoshop 準拠では <kbd>Ctrl</kbd>+<kbd>Y</kbd> に機能を割り当てていません（Photoshop の既定に忠実にするため）。やり直しは <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> を使ってください。</div>
+<div class="tip">ブラシサイズフェーダーをクリックした直後は、<kbd>↑</kbd> <kbd>↓</kbd> <kbd>Page Up</kbd> <kbd>Page Down</kbd> <kbd>Home</kbd> <kbd>End</kbd> がサイズ調整に使われます。キャンバスをクリックすると通常の割り当てに戻ります。</div>
+
+<h2 id="touch"><span class="num">5.</span>タッチ操作（Surface などのタブレット）</h2>
+<ul>
+  <li><strong>ペン</strong>: 描画。筆圧対応。ペンが触れている間、指のタッチは無視されます（パームリジェクション）。</li>
+  <li><strong>指1本ドラッグ</strong>: パン（表示位置の移動）。</li>
+  <li><strong>指2本ピンチ</strong>: ズーム。</li>
+</ul>
+
+<h2 id="pressure"><span class="num">6.</span>筆圧</h2>
+<ul>
+  <li>Windows 標準のペン入力経路（Windows Ink / WM_POINTER）から筆圧を取得し、線の太さに反映します。<strong>既定はオン</strong>です。</li>
+  <li>太さを一定にしたい場合は、次のどちらかでオフにできます:
+    <ul>
+      <li>設定（<kbd>Ctrl</kbd>+<kbd>,</kbd>）→「ペン」→「筆圧を使う」のチェックを外す</li>
+      <li>メニュー「ツール」→「筆圧」→「筆圧を使う」</li>
+    </ul>
+  </li>
+  <li>筆圧カーブ（標準 / やわらかめ / かため）は「ツール」→「筆圧」で切り替えられます。現在の状態はメニューのチェックマークで確認できます。</li>
+  <li>マウス描画は常に一定の太さです。</li>
+</ul>
+
+<h2 id="save"><span class="num">7.</span>保存と出力ファイル</h2>
+<ul>
+  <li>保存すると、朱入れを焼き込んだ <code>&lt;元ファイル名&gt;.review.png</code> が出力先に作られます。<strong>元画像は読み取り専用で、複製も変更もされません。</strong></li>
+  <li>同名ファイルがある場合は <code>-001</code> などの連番が付き、上書きしません。</li>
+  <li>出力先は設定（<kbd>Ctrl</kbd>+<kbd>,</kbd>）→「保存先」で変更できます: 隣接 <code>_review</code> フォルダ（既定）／画像と同じフォルダ／指定フォルダ。</li>
+  <li>作業用の透過ストローク PNG とベクター JSON は出力先の <code>strokes</code> サブフォルダに置かれ、Akapen 終了時に自動削除されます。</li>
+</ul>
+
+<h2 id="sequence"><span class="num">8.</span>連番ナビゲーション</h2>
+<ul>
+  <li>同じフォルダ内の対応画像を名前順（エクスプローラーと同じ自然順）に並べ、<kbd>←</kbd> / <kbd>→</kbd> で前後に移動します。</li>
+  <li>移動時、未保存の描き込みは自動保存されます（設定「画像切り替え」でオフにできます）。</li>
+  <li>前後各72枚（24fps換算で各3秒）を先読みし、切替を高速化します。</li>
+</ul>
+
+<h2 id="settings"><span class="num">9.</span>設定一覧（<kbd>Ctrl</kbd>+<kbd>,</kbd>）</h2>
+<table>
+  <tr><th>節</th><th>項目</th><th>既定値</th></tr>
+  <tr><td>ショートカット</td><td>Photoshop 準拠 / CLIP STUDIO PAINT 準拠</td><td>Photoshop 準拠</td></tr>
+  <tr><td>ペン</td><td>筆圧を使う</td><td>オン</td></tr>
+  <tr><td>キャンバス</td><td>画像の範囲外を黒にする</td><td>オフ（白）</td></tr>
+  <tr><td>画像切り替え</td><td>切り替える前に自動保存する</td><td>オン</td></tr>
+  <tr><td>保存先</td><td>保存先モード / フォルダ名 / 指定パス</td><td>隣接 <code>_review</code></td></tr>
+</table>
+<p>OK で保存、キャンセルで変更を破棄します。設定ファイルは <code>%LOCALAPPDATA%\Akapen\settings.json</code> です。</p>
+
+<h2 id="about"><span class="num">10.</span>バージョン情報・ライセンス</h2>
+<ul>
+  <li>メニュー「ヘルプ」→「バージョン情報」で現在のバージョンを確認できます。</li>
+  <li>Akapen のソースコードは Apache License 2.0 で公開されています。配布バイナリの使用条件はインストーラの使用許諾契約書（EULA）に従います。</li>
+  <li>CLIP STUDIO PAINT は株式会社セルシスの登録商標です。Adobe および Photoshop は Adobe Inc. の商標です。本プロジェクトは両社と関係がありません。ショートカットの「準拠」は操作互換の説明のための記載です。</li>
+</ul>
+
+<h2 id="trouble"><span class="num">11.</span>トラブルシューティング</h2>
+<table>
+  <tr><th>症状</th><th>対処</th></tr>
+  <tr><td>筆圧が効かない</td><td>タブレットドライバで「Windows Ink を使用」をオンにする。設定→ペン→「筆圧を使う」がオンか確認。</td></tr>
+  <tr><td>線が全部同じ太さになる</td><td>設定→ペン→「筆圧を使う」がオフになっていないか確認。</td></tr>
+  <tr><td>保存できない</td><td>出力先フォルダの書き込み権限・空き容量を確認。設定→保存先で別のフォルダを指定。</td></tr>
+  <tr><td>手のひらで線が入る</td><td>ペンを画面に近づけてから手を置く。ペン接触中のタッチは無視されます。</td></tr>
+  <tr><td>C ドライブが足りない</td><td><code>AkapenSetup.exe --install-dir D:\Akapen</code> で別ドライブへインストール。</td></tr>
+</table>
+
+</main>
+<footer>
+  Akapen — (C) 2026 Yoshino Yoshikawa ｜ このマニュアルはメニュー「ヘルプ」→「Akapen ヘルプ」からも開けます。
+</footer>
+</body>
+</html>

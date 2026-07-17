@@ -120,16 +120,14 @@ jobs:
         # layout mismatch only fails here, at real P/Invoke call time.
         run: dotnet bindings\dotnet\Akapen.SmokeTest\bin\Release\net8.0\Akapen.SmokeTest.dll
 
-  # Windows shell (spec §9 M2, first-cut). Only builds the WinUI 3 project —
-  # actually running the shell needs Session 1 to reach a DX12 swapchain (same
-  # limitation apps/windows-probe hits under Session 0 SSH), and `dotnet build`
-  # cannot present a XAML window on a headless runner. The build alone still
-  # catches every regression the shell is meant to catch here: XAML markup /
-  # code-behind mismatches, .csproj drift against the WindowsAppSDK NuGet
-  # package, and any accidental break of the shared generated binding source
-  # consumed by the shell and Akapen.Native.
+  # Windows product shell (raw Win32, formerly apps/windows-probe; the WinUI 3
+  # validation shell was retired 2026-07-17). Builds the shell and runs the UI
+  # contract tests. Actually presenting a DX12 swapchain needs a Session 1
+  # desktop, so real GUI verification stays a manual .34 step — see
+  # apps/windows/README.md. The shell csproj is plain net8.0 (raw P/Invoke),
+  # so build + contract tests run fine on a headless runner.
   apps-windows-shell:
-    name: apps / windows shell (WinUI 3)
+    name: apps / windows shell (raw Win32 product)
     runs-on: windows-latest
     needs: header-parity
     steps:
@@ -144,38 +142,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Build the Rust C ABI (produces akapen.dll)
         run: cargo build -p akapen-ffi --release
-      - name: Generate C# P/Invoke bindings via csbindgen
-        # The shell consumes the same csbindgen-generated NativeMethods the
-        # bindings-dotnet job compiles — regenerate first so a Rust FFI drift
-        # fails here as a compile error, not a runtime crash.
-        run: cargo run -p akapen-dotnet-bindgen
-      - name: Build the WinUI 3 shell (build only, no run)
-        # Session 0 GitHub Actions runners cannot present a DX12 swapchain, so
-        # the shell can only be *built* here. Real GUI verification (Open, draw,
-        # save) is a manual .34 Session 1 step — see apps/windows/README.md.
-        run: dotnet build apps/windows/AkapenApp/AkapenApp.csproj -c Release
-
-  # Boundary-value tests for SettingsStore.cs (spec §4.7 / §9 M2-E). Added in
-  # response to Codex 再レビュー Medium 2: a manual /tmp test harness existed
-  # only on a dev machine and was never runnable from the repo or in CI.
-  # SettingsStore.cs itself has zero WinUI / Windows App SDK dependency (see
-  # its own header comment — only System.IO / System.Text.Json), so unlike
-  # apps-windows-shell this job needs neither a windows-latest runner nor the
-  # Rust FFI build; it runs the AkapenApp.Tests console project directly on
-  # ubuntu-latest, which is the lighter/faster choice and keeps this
-  # regression check independent of the WindowsAppSDK toolchain being
-  # available at all.
-  apps-windows-tests:
-    name: apps / windows tests (SettingsStore)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install .NET SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-      - name: Run SettingsStore boundary-value tests
-        run: dotnet run --project apps/windows/AkapenApp.Tests -c Release
+      - name: Build the Windows product shell
+        run: dotnet build apps/windows/AkapenProbe/AkapenProbe.csproj -c Release
+      - name: Run the UI contract tests
+        run: dotnet run --project apps/windows/AkapenProbe.Tests -c Release
 
   bindings-node:
     name: bindings / node (napi-rs, ${{ matrix.os }})

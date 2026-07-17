@@ -1876,6 +1876,7 @@ internal static class Program
     private const int ProductPressureSoftId = 0x5203;
     private const int ProductPressureHardId = 0x5204;
     private const int ProductAboutId = 0x5210;
+    private const int ProductHelpManualId = 0x5211;
 
     private static IntPtr CreateProductMenu()
     {
@@ -1925,6 +1926,8 @@ internal static class Program
         AppendMenu(menu, MF_POPUP, (UIntPtr)settings, "設定");
 
         IntPtr help = CreatePopupMenu();
+        AppendMenu(help, MF_STRING, (UIntPtr)ProductHelpManualId, "Akapen ヘルプ");
+        AppendMenu(help, MF_SEPARATOR, UIntPtr.Zero, null);
         AppendMenu(help, MF_STRING, (UIntPtr)ProductAboutId, "バージョン情報");
         AppendMenu(menu, MF_POPUP, (UIntPtr)help, "ヘルプ");
         return menu;
@@ -1997,6 +2000,28 @@ internal static class Program
             KeymapPreset = UiSettingsStore.KeymapPresetName(s_keymapPreset),
             PressureEnabled = s_pressureEnabled,
         });
+    }
+
+    /// <summary>
+    /// Opens the bundled HTML manual in the default browser (ヘルプ → Akapen
+    /// ヘルプ). The file ships beside the exe under manual\; falls back to the
+    /// repository copy's URL when missing (e.g. running from a dev tree).
+    /// </summary>
+    private static void OpenManual(IntPtr owner)
+    {
+        string local = Path.Combine(AppContext.BaseDirectory, "manual", "akapen-manual-ja.html");
+        string target = File.Exists(local)
+            ? local
+            : "https://github.com/yosshibox/akapen/blob/main/docs/manual/akapen-manual-ja.md";
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(target) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.Write("help-manual", ex);
+            MessageBox(owner, $"マニュアルを開けませんでした。\n{target}", "Akapen", MB_ICONERROR);
+        }
     }
 
     private static string AboutText()
@@ -2367,6 +2392,9 @@ internal static class Program
                             return IntPtr.Zero;
                         case ProductAboutId:
                             MessageBox(hWnd, AboutText(), "Akapen について", 0x40 /*MB_ICONINFORMATION*/);
+                            return IntPtr.Zero;
+                        case ProductHelpManualId:
+                            OpenManual(hWnd);
                             return IntPtr.Zero;
                     }
                 }
