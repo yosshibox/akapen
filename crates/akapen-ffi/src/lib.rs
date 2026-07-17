@@ -422,6 +422,88 @@ pub unsafe extern "C" fn akapen_composite_rgba(
     needed
 }
 
+/// Downscales the display composite (background + strokes + in-progress
+/// stroke) into a thumbnail no larger than `max_w` × `max_h`, preserving the
+/// aspect ratio and never upscaling. Intended for the shell's navigator panel
+/// (V1.1): the reduction happens on the Rust side so the shell never copies
+/// the full-resolution composite across the ABI.
+///
+/// Writes the chosen dimensions to `out_w`/`out_h` (when non-null) and returns
+/// the number of bytes needed (`out_w * out_h * 4`, straight RGBA8). If `out`
+/// is null or `out_len` is smaller than that, no pixels are written — call
+/// once with `out = NULL` to size the buffer, then again to fill it. Returns 0
+/// for a null engine or when `max_w`/`max_h` is 0.
+///
+/// # Safety
+/// `out` must be null or point to at least `out_len` writable bytes; `out_w` /
+/// `out_h` must be null or valid, writable `uint32_t` pointers.
+#[no_mangle]
+pub unsafe extern "C" fn akapen_thumbnail_rgba(
+    engine: *mut AkapenEngine,
+    max_w: u32,
+    max_h: u32,
+    out: *mut u8,
+    out_len: usize,
+    out_w: *mut u32,
+    out_h: *mut u32,
+) -> usize {
+    let Some(e) = as_engine(engine) else {
+        return 0;
+    };
+    if max_w == 0 || max_h == 0 {
+        return 0;
+    }
+    let src = e.inner.composite_for_display();
+    let (src_w, src_h) = (src.width as usize, src.height as usize);
+    if src_w == 0 || src_h == 0 {
+        return 0;
+    }
+    // Fit inside (max_w, max_h) without upscaling.
+    let scale = (max_w as f64 / src_w as f64)
+        .min(max_h as f64 / src_h as f64)
+        .min(1.0);
+    let dst_w = ((src_w as f64 * scale).round() as usize).max(1);
+    let dst_h = ((src_h as f64 * scale).round() as usize).max(1);
+    if !out_w.is_null() {
+        *out_w = dst_w as u32;
+    }
+    if !out_h.is_null() {
+        *out_h = dst_h as u32;
+    }
+    let needed = dst_w * dst_h * 4;
+    if out.is_null() || out_len < needed {
+        return needed;
+    }
+    // Box filter: average the source rectangle each destination pixel covers.
+    // Quality-appropriate for a navigator thumbnail and dependency-free.
+    let dst = std::slice::from_raw_parts_mut(out, needed);
+    for dy in 0..dst_h {
+        let y0 = dy * src_h / dst_h;
+        let y1 = (((dy + 1) * src_h).div_ceil(dst_h)).min(src_h).max(y0 + 1);
+        for dx in 0..dst_w {
+            let x0 = dx * src_w / dst_w;
+            let x1 = (((dx + 1) * src_w).div_ceil(dst_w)).min(src_w).max(x0 + 1);
+            let mut acc = [0u64; 4];
+            for sy in y0..y1 {
+                let row = sy * src_w;
+                for sx in x0..x1 {
+                    let p = (row + sx) * 4;
+                    acc[0] += src.data[p] as u64;
+                    acc[1] += src.data[p + 1] as u64;
+                    acc[2] += src.data[p + 2] as u64;
+                    acc[3] += src.data[p + 3] as u64;
+                }
+            }
+            let count = ((y1 - y0) * (x1 - x0)) as u64;
+            let d = (dy * dst_w + dx) * 4;
+            for c in 0..4 {
+                dst[d + c] = (acc[c] / count) as u8;
+            }
+        }
+    }
+    needed
+}
+
 /// Writes the 3-file export (transparent strokes PNG / flat PNG / vector JSON)
 /// into `dir`, using `stem` as the base filename with collision-free naming.
 /// The artifact suffixes (default `review` / `strokes`) come from the engine's
@@ -891,7 +973,24 @@ fn physical_key_from_code(code: i32) -> akapen_core::PhysicalKey {
         18 => K::Caret,
         19 => K::PageUp,
         20 => K::PageDown,
+        21 => K::KeyB,
+        22 => K::Digit1,
+        23 => K::ArrowLeft,
+        24 => K::ArrowRight,
+        25 => K::ArrowUp,
+        26 => K::ArrowDown,
         _ => K::Other,
+    }
+}
+
+/// Stable C ABI keymap-preset codes accepted by [`akapen_resolve_key_preset`].
+/// Mirrored in `include/akapen.h`. `0` (CLIP STUDIO) matches the table
+/// [`akapen_resolve_key`] resolves against, keeping the two entry points
+/// consistent; `1` is the Photoshop-verbatim table (the V1.1 product default).
+fn keymap_preset_from_code(code: i32) -> akapen_core::KeymapPreset {
+    match code {
+        1 => akapen_core::KeymapPreset::Photoshop,
+        _ => akapen_core::KeymapPreset::ClipStudio,
     }
 }
 
@@ -960,6 +1059,38 @@ pub extern "C" fn akapen_resolve_key(
         text_editing: text_editing != 0,
     };
     match akapen_core::resolve_key(input) {
+        Some(action) => action_to_code(action),
+        None => action_code::NONE,
+    }
+}
+
+/// [`akapen_resolve_key`] with an explicit keymap preset (spec §3 / V1.1).
+/// `preset`: 0 = CLIP STUDIO (identical to [`akapen_resolve_key`]),
+/// 1 = Photoshop (the product default since V1.1). Unknown codes fall back to
+/// CLIP STUDIO. All other parameters are identical to [`akapen_resolve_key`].
+#[no_mangle]
+pub extern "C" fn akapen_resolve_key_preset(
+    preset: i32,
+    ch: u32,
+    physical: i32,
+    primary: c_int,
+    shift: c_int,
+    alt: c_int,
+    composing: c_int,
+    text_editing: c_int,
+) -> i32 {
+    let input = akapen_core::KeyInput {
+        ch: char::from_u32(ch).filter(|c| *c != '\0'),
+        physical: physical_key_from_code(physical),
+        mods: akapen_core::Modifiers {
+            primary: primary != 0,
+            shift: shift != 0,
+            alt: alt != 0,
+        },
+        composing: composing != 0,
+        text_editing: text_editing != 0,
+    };
+    match akapen_core::resolve_key_preset(keymap_preset_from_code(preset), input) {
         Some(action) => action_to_code(action),
         None => action_code::NONE,
     }
@@ -1248,6 +1379,111 @@ mod tests {
             akapen_resolve_key('o' as u32, 6, 1, 0, 0, 0, 0),
             action_code::NONE
         );
+    }
+
+    #[test]
+    fn resolve_key_preset_bridges_photoshop_table() {
+        // Preset 0 (CLIP STUDIO) matches akapen_resolve_key exactly.
+        assert_eq!(
+            akapen_resolve_key_preset(0, 'r' as u32, 5, 0, 0, 0, 0, 0),
+            action_code::TOOL_RECT
+        );
+        // Preset 1 (Photoshop): B -> pen(brush), R -> rotate right.
+        assert_eq!(
+            akapen_resolve_key_preset(1, 'b' as u32, 21, 0, 0, 0, 0, 0),
+            action_code::TOOL_PEN
+        );
+        assert_eq!(
+            akapen_resolve_key_preset(1, 'r' as u32, 5, 0, 0, 0, 0, 0),
+            action_code::ROTATE_RIGHT
+        );
+        // Photoshop: Ctrl+Y is NOT redo; Ctrl+1 is 100%.
+        assert_eq!(
+            akapen_resolve_key_preset(1, 'y' as u32, 12, 1, 0, 0, 0, 0),
+            action_code::NONE
+        );
+        assert_eq!(
+            akapen_resolve_key_preset(1, '1' as u32, 22, 1, 0, 0, 0, 0),
+            action_code::ACTUAL_SIZE
+        );
+        // Arrows (physical-only) work in both presets.
+        assert_eq!(
+            akapen_resolve_key_preset(0, 0, 23, 0, 0, 0, 0, 0),
+            action_code::PREV_FRAME
+        );
+        assert_eq!(
+            akapen_resolve_key_preset(1, 0, 24, 0, 0, 0, 0, 0),
+            action_code::NEXT_FRAME
+        );
+        assert_eq!(
+            akapen_resolve_key_preset(1, 0, 25, 0, 0, 0, 0, 0),
+            action_code::ZOOM_IN
+        );
+        assert_eq!(
+            akapen_resolve_key_preset(1, 0, 26, 0, 0, 0, 0, 0),
+            action_code::ZOOM_OUT
+        );
+        // Unknown preset codes fall back to CLIP STUDIO.
+        assert_eq!(
+            akapen_resolve_key_preset(99, 'r' as u32, 5, 0, 0, 0, 0, 0),
+            action_code::TOOL_RECT
+        );
+    }
+
+    #[test]
+    fn thumbnail_rgba_downscales_with_aspect() {
+        unsafe {
+            let engine = akapen_new(800, 600);
+            assert!(!engine.is_null());
+            let mut w = 0u32;
+            let mut h = 0u32;
+            // Size probe.
+            let needed =
+                akapen_thumbnail_rgba(engine, 160, 160, std::ptr::null_mut(), 0, &mut w, &mut h);
+            assert_eq!((w, h), (160, 120), "4:3 fits 160x160 as 160x120");
+            assert_eq!(needed, 160 * 120 * 4);
+            // Fill.
+            let mut buf = vec![0u8; needed];
+            let written = akapen_thumbnail_rgba(
+                engine,
+                160,
+                160,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut w,
+                &mut h,
+            );
+            assert_eq!(written, needed);
+            // A blank canvas is opaque white everywhere.
+            assert!(buf.chunks_exact(4).all(|p| p == [255, 255, 255, 255]));
+            // Never upscales: a tiny engine keeps its natural size.
+            let small = akapen_new(10, 10);
+            let mut sw = 0u32;
+            let mut sh = 0u32;
+            let sn =
+                akapen_thumbnail_rgba(small, 160, 160, std::ptr::null_mut(), 0, &mut sw, &mut sh);
+            assert_eq!((sw, sh), (10, 10));
+            assert_eq!(sn, 10 * 10 * 4);
+            // Null engine / zero max are 0.
+            assert_eq!(
+                akapen_thumbnail_rgba(
+                    std::ptr::null_mut(),
+                    160,
+                    160,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut sw,
+                    &mut sh
+                ),
+                0
+            );
+            assert_eq!(
+                akapen_thumbnail_rgba(engine, 0, 160, std::ptr::null_mut(), 0, &mut sw, &mut sh),
+                0
+            );
+            akapen_free(small);
+            akapen_free(engine);
+        }
     }
 
     #[test]

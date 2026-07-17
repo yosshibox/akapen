@@ -84,7 +84,33 @@ pub enum PhysicalKey {
     Caret,
     PageUp,
     PageDown,
+    /// The `B` key (Photoshop preset: Brush → Pen tool).
+    KeyB,
+    /// The `1` digit key (Photoshop preset: Ctrl+1 → 100% view).
+    Digit1,
+    ArrowLeft,
+    ArrowRight,
+    ArrowUp,
+    ArrowDown,
     Other,
+}
+
+/// A named shortcut table. The key → action mapping stays a pure function; the
+/// preset only selects which table the same [`KeyInput`] is resolved against.
+///
+/// - [`KeymapPreset::Photoshop`] (the product default since V1.1): every
+///   shortcut that exists in Adobe Photoshop's default set is copied verbatim
+///   (`B` brush, `Ctrl+Shift+Z` redo, `Ctrl+Alt+Z` step backward, `Ctrl+1`
+///   100%, `Ctrl+Y` deliberately unmapped because Photoshop uses it for proof
+///   colors). Akapen-only features with no Photoshop equivalent (shape tools,
+///   discrete rotate, transparent color, frame stepping) keep their spec §3
+///   keys, which collide with nothing in the Photoshop set.
+/// - [`KeymapPreset::ClipStudio`] is the original spec §3 CSP-compatible table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeymapPreset {
+    #[default]
+    Photoshop,
+    ClipStudio,
 }
 
 /// A described key-down event: the produced character (if any), the physical
@@ -144,16 +170,45 @@ pub enum Action {
     TransparentColor,
 }
 
-/// Resolves a described key event to an [`Action`], or `None` to leave the key
-/// alone. Pure and mode-independent (spec §3).
+/// Resolves a described key event against the CLIP STUDIO preset (spec §3).
+/// Kept as the stable entry point for existing callers; new callers should use
+/// [`resolve_preset`].
 pub fn resolve(input: KeyInput) -> Option<Action> {
+    resolve_preset(KeymapPreset::ClipStudio, input)
+}
+
+/// Resolves a described key event to an [`Action`] under the given preset, or
+/// `None` to leave the key alone. Pure and mode-independent (spec §3).
+pub fn resolve_preset(preset: KeymapPreset, input: KeyInput) -> Option<Action> {
     // Guards first (spec §3, B15/B21): never steal keys while the user is typing
     // or an IME is composing.
     if input.composing || input.text_editing {
         return None;
     }
     // Character-first, then array-independent physical fallback.
-    resolve_char(input.ch, input.mods).or_else(|| resolve_physical(input.physical, input.mods))
+    match preset {
+        KeymapPreset::ClipStudio => resolve_char(input.ch, input.mods)
+            .or_else(|| resolve_physical(input.physical, input.mods)),
+        KeymapPreset::Photoshop => resolve_char_ps(input.ch, input.mods)
+            .or_else(|| resolve_physical_ps(input.physical, input.mods)),
+    }
+}
+
+/// Arrow keys are shared by both presets and physical-only (arrows produce no
+/// character): Left/Right step the frame sequence, Up/Down zoom. Frame stepping
+/// on ←/→ matches the Windows product behavior recorded in the V1.0 baseline
+/// document; ↑/↓ zoom is the V1.1 addition.
+fn resolve_arrows(key: PhysicalKey, m: Modifiers) -> Option<Action> {
+    if m.primary || m.alt {
+        return None;
+    }
+    match key {
+        PhysicalKey::ArrowLeft => Some(Action::PrevFrame),
+        PhysicalKey::ArrowRight => Some(Action::NextFrame),
+        PhysicalKey::ArrowUp => Some(Action::ZoomIn),
+        PhysicalKey::ArrowDown => Some(Action::ZoomOut),
+        _ => None,
+    }
 }
 
 fn resolve_char(ch: Option<char>, m: Modifiers) -> Option<Action> {
@@ -267,6 +322,126 @@ fn resolve_physical(key: PhysicalKey, m: Modifiers) -> Option<Action> {
         // chosen so they never collide with markup keys (spec §3 note / §2.2).
         K::PageUp => Some(Action::PrevFrame),
         K::PageDown => Some(Action::NextFrame),
+        K::ArrowLeft | K::ArrowRight | K::ArrowUp | K::ArrowDown => resolve_arrows(key, m),
+        _ => None,
+    }
+}
+
+// ── Photoshop preset (V1.1 default) ──────────────────────────────────────
+//
+// Verbatim copies of Photoshop's default shortcuts where an Akapen action
+// exists for them:
+//   B = Brush(Pen) / E = Eraser / T = Type / I = Eyedropper / X = swap colors
+//   [ ] = brush size / Ctrl+Z undo / Ctrl+Shift+Z redo / Ctrl+Alt+Z step back
+//   Ctrl+= (+) zoom in / Ctrl+- zoom out / Ctrl+0 fit / Ctrl+1 = 100%
+//   Ctrl+Space / Alt+Space momentary zoom / R = rotate-view tool
+// Deliberate differences from the CSP table:
+//   - Ctrl+Y is UNMAPPED (Photoshop: proof colors, never redo).
+//   - R rotates the view (right; Shift+R left) instead of the Rect tool —
+//     Photoshop's R is the rotate-view tool and Akapen's rotate is discrete.
+//   - bare `-` / `^` are unmapped (no such Photoshop shortcut; rotation is on
+//     R / Shift+R in this preset).
+// Retained Akapen-only keys (no Photoshop collision, feature has no PS
+// equivalent): P pen, U line, A arrow, O ellipse, C transparent color,
+// PageUp/PageDown + arrow frame stepping.
+
+fn resolve_char_ps(ch: Option<char>, m: Modifiers) -> Option<Action> {
+    let ch = ch?;
+    let lower = ch.to_ascii_lowercase();
+
+    if m.primary {
+        return match lower {
+            // Ctrl+Z undo; Ctrl+Shift+Z redo; Ctrl+Alt+Z = Photoshop's "step
+            // backward", folded into plain undo here (Akapen history is linear).
+            'z' => Some(if m.shift { Action::Redo } else { Action::Undo }),
+            '0' => Some(if m.alt {
+                Action::ActualSize
+            } else {
+                Action::FitToWindow
+            }),
+            '1' => Some(Action::ActualSize),
+            ' ' => Some(Action::ZoomIn),
+            '=' | '+' => Some(Action::ZoomIn),
+            '-' => Some(Action::ZoomOut),
+            _ => None,
+        };
+    }
+
+    if m.alt {
+        return if ch == ' ' {
+            Some(Action::ZoomOut)
+        } else {
+            None
+        };
+    }
+
+    match ch {
+        'b' | 'B' => Some(Action::SelectTool(Tool::Pen)),
+        'p' | 'P' => Some(Action::SelectTool(Tool::Pen)),
+        'e' | 'E' => Some(Action::SelectTool(Tool::Eraser)),
+        'u' | 'U' => Some(Action::SelectTool(Tool::Line)),
+        'a' | 'A' => Some(Action::SelectTool(Tool::Arrow)),
+        'o' | 'O' => Some(Action::SelectTool(Tool::Ellipse)),
+        't' | 'T' => Some(Action::SelectTool(Tool::Text)),
+        'i' | 'I' => Some(Action::Eyedropper),
+        'x' | 'X' => Some(Action::SwapColor),
+        'c' | 'C' => Some(Action::TransparentColor),
+        'r' => Some(Action::RotateRight),
+        'R' => Some(if m.shift {
+            Action::RotateLeft
+        } else {
+            Action::RotateRight
+        }),
+        '[' => Some(Action::BrushSmaller),
+        ']' => Some(Action::BrushLarger),
+        _ => None,
+    }
+}
+
+fn resolve_physical_ps(key: PhysicalKey, m: Modifiers) -> Option<Action> {
+    use PhysicalKey as K;
+
+    if m.primary {
+        return match key {
+            K::KeyZ => Some(if m.shift { Action::Redo } else { Action::Undo }),
+            K::Digit0 => Some(if m.alt {
+                Action::ActualSize
+            } else {
+                Action::FitToWindow
+            }),
+            K::Digit1 => Some(Action::ActualSize),
+            K::Space => Some(Action::ZoomIn),
+            _ => None,
+        };
+    }
+
+    if m.alt {
+        return match key {
+            K::Space => Some(Action::ZoomOut),
+            _ => None,
+        };
+    }
+
+    match key {
+        K::KeyB | K::KeyP => Some(Action::SelectTool(Tool::Pen)),
+        K::KeyE => Some(Action::SelectTool(Tool::Eraser)),
+        K::KeyU => Some(Action::SelectTool(Tool::Line)),
+        K::KeyA => Some(Action::SelectTool(Tool::Arrow)),
+        K::KeyO => Some(Action::SelectTool(Tool::Ellipse)),
+        K::KeyT => Some(Action::SelectTool(Tool::Text)),
+        K::KeyI => Some(Action::Eyedropper),
+        K::KeyX => Some(Action::SwapColor),
+        K::KeyC => Some(Action::TransparentColor),
+        K::KeyR => Some(if m.shift {
+            Action::RotateLeft
+        } else {
+            Action::RotateRight
+        }),
+        K::BracketLeft => Some(Action::BrushSmaller),
+        K::BracketRight => Some(Action::BrushLarger),
+        K::PageUp => Some(Action::PrevFrame),
+        K::PageDown => Some(Action::NextFrame),
+        K::ArrowLeft | K::ArrowRight | K::ArrowUp | K::ArrowDown => resolve_arrows(key, m),
         _ => None,
     }
 }
@@ -547,6 +722,165 @@ mod tests {
         assert_eq!(
             resolve(key(Some('o'), PhysicalKey::KeyO, Modifiers::NONE)),
             Some(Action::SelectTool(Tool::Ellipse))
+        );
+    }
+
+    // ── Arrow keys (shared by both presets, physical-only) ──
+
+    #[test]
+    fn arrows_step_frames_and_zoom_in_both_presets() {
+        for preset in [KeymapPreset::ClipStudio, KeymapPreset::Photoshop] {
+            let cases = [
+                (PhysicalKey::ArrowLeft, Action::PrevFrame),
+                (PhysicalKey::ArrowRight, Action::NextFrame),
+                (PhysicalKey::ArrowUp, Action::ZoomIn),
+                (PhysicalKey::ArrowDown, Action::ZoomOut),
+            ];
+            for (phys, want) in cases {
+                assert_eq!(
+                    resolve_preset(preset, key(None, phys, Modifiers::NONE)),
+                    Some(want),
+                    "{preset:?} {phys:?}"
+                );
+            }
+            // Modified arrows are left to the shell / OS.
+            assert_eq!(
+                resolve_preset(
+                    preset,
+                    key(None, PhysicalKey::ArrowLeft, Modifiers::PRIMARY)
+                ),
+                None,
+                "{preset:?} primary+Left must not step"
+            );
+        }
+    }
+
+    // ── Photoshop preset (V1.1 default) ──
+
+    #[test]
+    fn photoshop_brush_and_tools() {
+        let ps = KeymapPreset::Photoshop;
+        // B = brush is the Photoshop-verbatim binding; P is retained.
+        assert_eq!(
+            resolve_preset(ps, key(Some('b'), PhysicalKey::KeyB, Modifiers::NONE)),
+            Some(Action::SelectTool(Tool::Pen))
+        );
+        assert_eq!(
+            resolve_preset(ps, key(Some('p'), PhysicalKey::KeyP, Modifiers::NONE)),
+            Some(Action::SelectTool(Tool::Pen))
+        );
+        assert_eq!(
+            resolve_preset(ps, key(Some('e'), PhysicalKey::KeyE, Modifiers::NONE)),
+            Some(Action::SelectTool(Tool::Eraser))
+        );
+        // B means nothing in the CSP preset (regression guard).
+        assert_eq!(
+            resolve_preset(
+                KeymapPreset::ClipStudio,
+                key(Some('b'), PhysicalKey::KeyB, Modifiers::NONE)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn photoshop_rotate_on_r() {
+        let ps = KeymapPreset::Photoshop;
+        assert_eq!(
+            resolve_preset(ps, key(Some('r'), PhysicalKey::KeyR, Modifiers::NONE)),
+            Some(Action::RotateRight),
+            "R = rotate view (Photoshop's rotate-view tool)"
+        );
+        let mut shift = Modifiers::NONE;
+        shift.shift = true;
+        assert_eq!(
+            resolve_preset(ps, key(Some('R'), PhysicalKey::KeyR, shift)),
+            Some(Action::RotateLeft),
+            "Shift+R = rotate the other way"
+        );
+        // Physical fallback keeps the same meaning.
+        assert_eq!(
+            resolve_preset(ps, key(None, PhysicalKey::KeyR, Modifiers::NONE)),
+            Some(Action::RotateRight)
+        );
+        // Bare `-` / `^` are NOT rotation in the Photoshop preset.
+        assert_eq!(
+            resolve_preset(ps, key(Some('-'), PhysicalKey::Minus, Modifiers::NONE)),
+            None
+        );
+        assert_eq!(
+            resolve_preset(ps, key(Some('^'), PhysicalKey::Caret, Modifiers::NONE)),
+            None
+        );
+    }
+
+    #[test]
+    fn photoshop_history_and_view() {
+        let ps = KeymapPreset::Photoshop;
+        let m = Modifiers::PRIMARY;
+        assert_eq!(
+            resolve_preset(ps, key(Some('z'), PhysicalKey::KeyZ, m)),
+            Some(Action::Undo)
+        );
+        let mut ms = Modifiers::PRIMARY;
+        ms.shift = true;
+        assert_eq!(
+            resolve_preset(ps, key(Some('z'), PhysicalKey::KeyZ, ms)),
+            Some(Action::Redo),
+            "Ctrl+Shift+Z = redo (Photoshop default)"
+        );
+        let mut ma = Modifiers::PRIMARY;
+        ma.alt = true;
+        assert_eq!(
+            resolve_preset(ps, key(Some('z'), PhysicalKey::KeyZ, ma)),
+            Some(Action::Undo),
+            "Ctrl+Alt+Z = step backward = undo"
+        );
+        // Ctrl+Y is proof colors in Photoshop — must NOT redo here.
+        assert_eq!(
+            resolve_preset(ps, key(Some('y'), PhysicalKey::KeyY, m)),
+            None
+        );
+        assert_eq!(
+            resolve_preset(ps, key(Some('0'), PhysicalKey::Digit0, m)),
+            Some(Action::FitToWindow)
+        );
+        assert_eq!(
+            resolve_preset(ps, key(Some('1'), PhysicalKey::Digit1, m)),
+            Some(Action::ActualSize),
+            "Ctrl+1 = 100% (Photoshop default)"
+        );
+        assert_eq!(
+            resolve_preset(ps, key(Some('='), PhysicalKey::Other, m)),
+            Some(Action::ZoomIn)
+        );
+        assert_eq!(
+            resolve_preset(ps, key(Some('-'), PhysicalKey::Minus, m)),
+            Some(Action::ZoomOut)
+        );
+    }
+
+    #[test]
+    fn photoshop_guards_still_apply() {
+        let composing = KeyInput {
+            ch: Some('b'),
+            physical: PhysicalKey::KeyB,
+            mods: Modifiers::NONE,
+            composing: true,
+            text_editing: false,
+        };
+        assert_eq!(resolve_preset(KeymapPreset::Photoshop, composing), None);
+    }
+
+    #[test]
+    fn clipstudio_preset_matches_legacy_resolve() {
+        // `resolve` must stay the CSP table so existing callers (mac shell,
+        // V1.0 Windows shells) keep their behavior.
+        let input = key(Some('r'), PhysicalKey::KeyR, Modifiers::NONE);
+        assert_eq!(resolve(input), Some(Action::SelectTool(Tool::Rect)));
+        assert_eq!(
+            resolve_preset(KeymapPreset::ClipStudio, input),
+            Some(Action::SelectTool(Tool::Rect))
         );
     }
 
