@@ -19,8 +19,8 @@ dmg="$out_dir/Akapen-$version-macos.dmg"
 echo "[make-app] cargo build (release dylib/staticlib)"
 (cd "$repo_root" && cargo build -p akapen-ffi --release)
 
-echo "[make-app] swift build -c release"
-(cd "$mac_dir" && swift build -c release -Xlinker -L -Xlinker "$repo_root/target/release")
+echo "[make-app] swift build -c release (release Rust core)"
+(cd "$mac_dir" && rm -rf .build/release && AKAPEN_RUST_LIB_DIR="$repo_root/target/release" swift build -c release)
 
 bin_dir="$mac_dir/.build/release"
 test -x "$bin_dir/AkapenApp"

@@ -43,6 +43,8 @@ struct AkapenApp: App {
                     }
                 }
         }
+        // 初回起動の既定サイズ(2回目以降は frameAutosave が優先)。
+        .defaultSize(width: 1600, height: 1000)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("Akapen について") { showAbout() }

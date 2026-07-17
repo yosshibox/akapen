@@ -22,6 +22,41 @@ import AkapenKit
 import Foundation
 
 let args = CommandLine.arguments
+
+// Frame-navigation micro-benchmark (V1.2 性能調査):
+//   swift run -c release akapen-harness bench <folder>
+// Measures decode / swapDocument / thumbnail / composite per image.
+if args.count > 2, args[1] == "bench" {
+    let dir = URL(fileURLWithPath: args[2])
+    let exts = Set(["png", "jpg", "jpeg", "webp", "bmp"])
+    let urls = ((try? FileManager.default.contentsOfDirectory(
+        at: dir, includingPropertiesForKeys: nil)) ?? [])
+        .filter { exts.contains($0.pathExtension.lowercased()) }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    guard let first = urls.first, let active = AkapenEngine(imagePath: first.path) else {
+        print("bench: no images in \(dir.path)")
+        exit(1)
+    }
+    func ms(_ block: () -> Void) -> Double {
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        block()
+        return Double(DispatchTime.now().uptimeNanoseconds - t0) / 1_000_000
+    }
+    let (w, h) = active.size
+    print("bench: \(urls.count) images, first \(w)x\(h)")
+    for url in urls.dropFirst() {
+        var standby: AkapenEngine?
+        let tDecode = ms { standby = AkapenEngine(imagePath: url.path) }
+        guard let standby else { continue }
+        let tSwap = ms { _ = active.swapDocument(with: standby) }
+        let tThumb = ms { _ = active.thumbnail() }
+        let tComposite = ms { _ = active.compositeImage() }
+        print(String(format: "%@ decode %7.1fms swap %6.1fms thumb %7.1fms composite %7.1fms",
+                     url.lastPathComponent, tDecode, tSwap, tThumb, tComposite))
+    }
+    exit(0)
+}
+
 let outDir = args.count > 1 ? args[1] : NSTemporaryDirectory() + "akapen-m1"
 try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
 

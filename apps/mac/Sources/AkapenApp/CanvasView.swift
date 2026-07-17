@@ -94,6 +94,10 @@ final class CanvasNSView: NSView {
         // 回転時に描画がステータスバーへはみ出さないよう明示クリップ
         // (macOS 14 以降 clipsToBounds の既定が false)。
         clipsToBounds = true
+        // 前回終了時のウィンドウ位置・サイズを記憶/復元(AppKit標準)。
+        if let window, window.frameAutosaveName.isEmpty {
+            window.setFrameAutosaveName("AkapenMainWindow")
+        }
         window?.acceptsMouseMovedEvents = true
         // Receive *direct* touches (finger/palm on a touch display) so palm
         // rejection can classify and reject them (spec §5.2). Indirect
@@ -147,8 +151,6 @@ final class CanvasNSView: NSView {
         return false
     }
 
-    private var sizedWindowOnce = false
-
     func refresh() {
         guard let state else { return }
         guard state.revision != lastRevision else { return }
@@ -158,10 +160,11 @@ final class CanvasNSView: NSView {
             let (w, h) = e.size
             let newSize = CGSize(width: w, height: h)
             // 新しい文書(サイズ変化)は必ずフィットし直す(Windows の
-            // OpenImageFile → FitView の写像)。
+            // OpenImageFile → FitView の写像)。ウィンドウサイズ自体は
+            // 変えない(ユーザー指示: 切替でウィンドウが動くのは不可。
+            // サイズは frameAutosave で前回終了時の値を復元する)。
             if imageSize != newSize { fittedOnce = false }
             imageSize = newSize
-            sizeWindowToImageIfNeeded()
         } else {
             imageSize = nil
         }
@@ -177,26 +180,6 @@ final class CanvasNSView: NSView {
             fitIfNeeded()
             needsDisplay = true
         }
-    }
-
-    /// 最初の画像を開いたとき、ウィンドウを画像に合わせた作業サイズにする
-    /// (Windows 起動時の「画像原寸ベースのクライアントサイズ」の写像。画面の
-    /// 85% を上限にフィット)。以後のリサイズはユーザーの意思を尊重する。
-    private func sizeWindowToImageIfNeeded() {
-        guard !sizedWindowOnce, let window, let sz = imageSize,
-              let screen = window.screen ?? NSScreen.main else { return }
-        sizedWindowOnce = true
-        let avail = screen.visibleFrame
-        let dockW = CGFloat(AkapenUIMetrics.dockWidth) + 1
-        let statusH = CGFloat(AkapenUIMetrics.statusHeight) + 1
-        let maxCanvasW = avail.width * 0.85 - dockW
-        let maxCanvasH = avail.height * 0.85 - statusH
-        let scale = min(1, min(maxCanvasW / sz.width, maxCanvasH / sz.height))
-        let content = NSSize(
-            width: max(960, sz.width * scale + dockW),
-            height: max(720, sz.height * scale + statusH))
-        window.setContentSize(content)
-        window.center()
     }
 
     private func fitIfNeeded() {

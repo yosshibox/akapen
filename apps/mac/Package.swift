@@ -9,9 +9,14 @@
 // `../../target/debug/libakapen.a` (run `cargo build -p akapen-ffi` at the repo
 // root first; the Makefile / README document this). The linker flags below pull
 // it in for both the SwiftUI app and the headless harness.
+import Foundation
 import PackageDescription
 
-let rustLibDir = "../../target/debug"
+// AKAPEN_RUST_LIB_DIR で release ライブラリへ切替できる(既定は開発用 debug)。
+// 配布ビルド(scripts/make-app.sh)は必ず ../../target/release を指定する —
+// V1.2 で「配布 dmg が debug ビルドの Rust コアをリンクして極めて遅い」事故が
+// あったための明示ノブ。
+let rustLibDir = ProcessInfo.processInfo.environment["AKAPEN_RUST_LIB_DIR"] ?? "../../target/debug"
 
 let linkRust: [LinkerSetting] = [
     .unsafeFlags(["-L", rustLibDir]),

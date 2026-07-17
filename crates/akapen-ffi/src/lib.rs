@@ -453,8 +453,15 @@ pub unsafe extern "C" fn akapen_thumbnail_rgba(
     if max_w == 0 || max_h == 0 {
         return 0;
     }
-    let src = e.inner.composite_for_display();
-    let (src_w, src_h) = (src.width as usize, src.height as usize);
+    // Sample background + committed strokes directly instead of flattening
+    // the full-resolution composite first (the V1.2 profile showed ~180ms per
+    // call at 2330x1654; navigator refreshes run on the shell's main thread
+    // at every frame switch and stroke end). The in-progress (wet) stroke is
+    // intentionally not sampled: shells refresh the thumbnail at stroke end,
+    // when the stroke is already committed to the layer.
+    let bg = e.inner.background();
+    let layer = e.inner.strokes_layer();
+    let (src_w, src_h) = (bg.width as usize, bg.height as usize);
     if src_w == 0 || src_h == 0 {
         return 0;
     }
@@ -474,30 +481,59 @@ pub unsafe extern "C" fn akapen_thumbnail_rgba(
     if out.is_null() || out_len < needed {
         return needed;
     }
-    // Box filter: average the source rectangle each destination pixel covers.
-    // Quality-appropriate for a navigator thumbnail and dependency-free.
+    // Sparse box filter: average at most a 3x3 grid of samples per destination
+    // pixel (source-over blending layer onto background per sample). Visually
+    // indistinguishable at navigator size, and O(dst) instead of O(src).
     let dst = std::slice::from_raw_parts_mut(out, needed);
+    let sample = |sx: usize, sy: usize| -> [u32; 4] {
+        let p = (sy * src_w + sx) * 4;
+        let (br, bg_, bb) = (bg.data[p] as u32, bg.data[p + 1] as u32, bg.data[p + 2] as u32);
+        let (sr, sg, sb, sa) = (
+            layer.data[p] as u32,
+            layer.data[p + 1] as u32,
+            layer.data[p + 2] as u32,
+            layer.data[p + 3] as u32,
+        );
+        // Straight-alpha source-over onto the opaque background.
+        [
+            (sr * sa + br * (255 - sa)) / 255,
+            (sg * sa + bg_ * (255 - sa)) / 255,
+            (sb * sa + bb * (255 - sa)) / 255,
+            255,
+        ]
+    };
     for dy in 0..dst_h {
         let y0 = dy * src_h / dst_h;
-        let y1 = (((dy + 1) * src_h).div_ceil(dst_h)).min(src_h).max(y0 + 1);
+        let y1 = (((dy + 1) * src_h) / dst_h).min(src_h).max(y0 + 1);
+        let ys = [y0, (y0 + y1) / 2, y1 - 1];
         for dx in 0..dst_w {
             let x0 = dx * src_w / dst_w;
-            let x1 = (((dx + 1) * src_w).div_ceil(dst_w)).min(src_w).max(x0 + 1);
-            let mut acc = [0u64; 4];
-            for sy in y0..y1 {
-                let row = sy * src_w;
-                for sx in x0..x1 {
-                    let p = (row + sx) * 4;
-                    acc[0] += src.data[p] as u64;
-                    acc[1] += src.data[p + 1] as u64;
-                    acc[2] += src.data[p + 2] as u64;
-                    acc[3] += src.data[p + 3] as u64;
+            let x1 = (((dx + 1) * src_w) / dst_w).min(src_w).max(x0 + 1);
+            let xs = [x0, (x0 + x1) / 2, x1 - 1];
+            let mut acc = [0u32; 4];
+            let mut count = 0u32;
+            let mut last_y = usize::MAX;
+            for &sy in &ys {
+                if sy == last_y {
+                    continue;
+                }
+                last_y = sy;
+                let mut last_x = usize::MAX;
+                for &sx in &xs {
+                    if sx == last_x {
+                        continue;
+                    }
+                    last_x = sx;
+                    let px = sample(sx, sy);
+                    for c in 0..4 {
+                        acc[c] += px[c];
+                    }
+                    count += 1;
                 }
             }
-            let count = ((y1 - y0) * (x1 - x0)) as u64;
             let d = (dy * dst_w + dx) * 4;
             for c in 0..4 {
-                dst[d + c] = (acc[c] / count) as u8;
+                dst[d + c] = (acc[c] / count.max(1)) as u8;
             }
         }
     }
