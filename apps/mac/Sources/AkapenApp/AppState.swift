@@ -118,11 +118,27 @@ final class AppState: ObservableObject {
 
     let supportedExts: Set<String> = ["png", "jpg", "jpeg", "webp", "bmp"]
 
+    // ── Frame-navigation cache (V1.2, Windows §4.5 の写像) ────────────────
+    // Decoded documents keyed by URL. Two sources: preloaded neighbors and
+    // documents swapped out by akapen_swap_document (which then preserve
+    // per-image strokes/undo across back-and-forth navigation). Decode runs
+    // off the main actor; the GPU surface never re-attaches on navigation.
+    private var documentCache: [URL: AkapenEngine] = [:]
+    private var cacheOrder: [URL] = []
+    private var preloadInFlight: Set<URL> = []
+    private var dirtyDocs: Set<URL> = []
+    private let preloadRadius = 12
+    private let cacheLimit = 30
+
     func open(url: URL) {
+        if let cached = takeCached(url) {
+            activate(document: cached, url: url)
+            return
+        }
         workspacePhase = .loading
-        Task { @MainActor in
-            await Task.yield()
-            finishOpen(url: url)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let decoded = AkapenEngine(imagePath: url.path)
+            await MainActor.run { self?.finishOpen(url: url, decoded: decoded) }
         }
     }
 
@@ -150,18 +166,35 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func finishOpen(url: URL) {
-        guard let e = AkapenEngine(imagePath: url.path) else {
+    private func finishOpen(url: URL, decoded: AkapenEngine?) {
+        guard let e = decoded else {
             statusText = "Could not open \(url.lastPathComponent)."
             workspacePhase = engine == nil ? .empty : .loaded
             return
         }
-        engine = e
+        activate(document: e, url: url)
+    }
+
+    /// Makes `document` the displayed document. When an engine (and its GPU
+    /// surface) already exists, the documents are swapped in place —
+    /// navigation never tears down the swapchain — and the previous document
+    /// goes into the cache with its strokes/undo intact (spec §4.5).
+    private func activate(document: AkapenEngine, url: URL) {
+        if let active = engine, active !== document {
+            if active.swapDocument(with: document) {
+                if let prev = currentURL { storeCache(prev, document) }
+            } else {
+                engine = document // fallback: full replace (GPU re-attach)
+            }
+        } else if engine == nil {
+            engine = document
+        }
+        guard let e = engine else { return }
         currentURL = url
         applyToolState()
         loadSiblings(of: url)
         pressureWarning = false
-        hasUnsavedStrokes = false
+        hasUnsavedStrokes = dirtyDocs.contains(url)
         refreshHistory()
         let (w, h) = e.size
         statusText = "\(url.lastPathComponent) — \(w)×\(h)"
@@ -169,6 +202,52 @@ final class AppState: ObservableObject {
         imageSize = CGSize(width: w, height: h)
         refreshNavigatorThumbnail()
         revision += 1
+        preloadNeighbors(of: url)
+    }
+
+    private func takeCached(_ url: URL) -> AkapenEngine? {
+        guard let cached = documentCache.removeValue(forKey: url) else { return nil }
+        cacheOrder.removeAll { $0 == url }
+        return cached
+    }
+
+    private func storeCache(_ url: URL, _ document: AkapenEngine) {
+        if documentCache[url] == nil { cacheOrder.append(url) }
+        documentCache[url] = document
+        // Evict beyond the cap, oldest first, but never a document that still
+        // holds unsaved strokes (Windows parity: session documents survive).
+        while cacheOrder.count > cacheLimit {
+            guard let victim = cacheOrder.first(where: { !dirtyDocs.contains($0) }) else { break }
+            cacheOrder.removeAll { $0 == victim }
+            documentCache.removeValue(forKey: victim)
+        }
+    }
+
+    /// Decodes ±preloadRadius siblings in the background (Windows §4.5:
+    /// 前後の先読みで切替を体感ゼロにする).
+    private func preloadNeighbors(of url: URL) {
+        guard let idx = siblings.firstIndex(of: url) else { return }
+        var targets: [URL] = []
+        for offset in 1...preloadRadius {
+            for candidate in [idx + offset, idx - offset]
+            where siblings.indices.contains(candidate) {
+                targets.append(siblings[candidate])
+            }
+        }
+        for target in targets
+        where documentCache[target] == nil && !preloadInFlight.contains(target) {
+            preloadInFlight.insert(target)
+            Task.detached(priority: .utility) { [weak self] in
+                let decoded = AkapenEngine(imagePath: target.path)
+                await MainActor.run {
+                    guard let self else { return }
+                    self.preloadInFlight.remove(target)
+                    if let decoded, self.documentCache[target] == nil, self.currentURL != target {
+                        self.storeCache(target, decoded)
+                    }
+                }
+            }
+        }
     }
 
     private func loadSiblings(of url: URL) {
@@ -195,6 +274,7 @@ final class AppState: ObservableObject {
         if phase == .up {
             pressureWarning = e.pressureStuck
             hasUnsavedStrokes = true // 1ストローク完了 = このフレームは要保存
+            if let url = currentURL { dirtyDocs.insert(url) }
             refreshHistory()
             refreshNavigatorThumbnail()
         }
@@ -269,6 +349,7 @@ final class AppState: ObservableObject {
         do {
             try e.export(toDir: dir.path, stem: stem)
             hasUnsavedStrokes = false
+            if let url = currentURL { dirtyDocs.remove(url) }
             refreshHistory()
             // フォールバックが起きたときは、成功メッセージがそれを上書きして
             // 消してしまわないよう同じ statusText に警告を合流させる(Codex

@@ -122,6 +122,8 @@ struct SettingsView: View {
                 Text("ショートカット")
             } footer: {
                 Text("Photoshop 準拠: B=ブラシ、⌘⇧Z=やり直し、⌘1=100%、R / ⇧R=回転(15°)\nCLIP STUDIO 準拠: P=ペン、⌘Y=やり直し、- / ^=回転(15°)")
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Section {
@@ -130,6 +132,7 @@ struct SettingsView: View {
                 Text("ペン")
             } footer: {
                 Text("オフのときは筆圧を無視し、一定の太さで描きます。")
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Section {
@@ -152,7 +155,7 @@ struct SettingsView: View {
             } header: {
                 Text("保存先")
             } footer: {
-                outputFooter
+                outputFooter.frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Section {
@@ -163,16 +166,18 @@ struct SettingsView: View {
             } header: {
                 Text("ファイル名の接尾辞")
             } footer: {
-                suffixFooter
+                suffixFooter.frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Section {
             } footer: {
                 Text("設定はこの Mac のユーザーごとに保存されます（OS 標準の設定置き場）。")
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .formStyle(.grouped)
         .frame(width: 600, height: 620)
+        .environment(\.defaultMinListRowHeight, 34)
     }
 
     // MARK: - 保存先の行

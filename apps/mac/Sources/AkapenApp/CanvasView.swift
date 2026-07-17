@@ -156,7 +156,11 @@ final class CanvasNSView: NSView {
 
         if let e = state.engine {
             let (w, h) = e.size
-            imageSize = CGSize(width: w, height: h)
+            let newSize = CGSize(width: w, height: h)
+            // 新しい文書(サイズ変化)は必ずフィットし直す(Windows の
+            // OpenImageFile → FitView の写像)。
+            if imageSize != newSize { fittedOnce = false }
+            imageSize = newSize
             sizeWindowToImageIfNeeded()
         } else {
             imageSize = nil
@@ -189,8 +193,8 @@ final class CanvasNSView: NSView {
         let maxCanvasH = avail.height * 0.85 - statusH
         let scale = min(1, min(maxCanvasW / sz.width, maxCanvasH / sz.height))
         let content = NSSize(
-            width: max(720, sz.width * scale + dockW),
-            height: max(480, sz.height * scale + statusH))
+            width: max(960, sz.width * scale + dockW),
+            height: max(720, sz.height * scale + statusH))
         window.setContentSize(content)
         window.center()
     }

@@ -25,7 +25,23 @@ struct AkapenApp: App {
                 // Deliberately NOT in App.init(): touching NSApplication.shared
                 // before SwiftUI finishes app bootstrap prevents the WindowGroup
                 // window from ever being created (found by bisection, V1.2).
-                .onAppear { Self.applyDockIcon() }
+                .onAppear {
+                    Self.applyDockIcon()
+                    // Debug/self-verification: `--show-settings` opens the
+                    // settings window right away (screenshot automation).
+                    if ProcessInfo.processInfo.arguments.contains("--show-settings") {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                        }
+                    }
+                    // Headless UI verification: `--render-settings <png>`
+                    // renders SettingsView offscreen to a PNG and exits.
+                    let args = ProcessInfo.processInfo.arguments
+                    if let i = args.firstIndex(of: "--render-settings"), args.indices.contains(i + 1) {
+                        Self.renderSettingsSnapshot(to: args[i + 1])
+                        NSApp.terminate(nil)
+                    }
+                }
         }
         .commands {
             CommandGroup(replacing: .appInfo) {
@@ -126,6 +142,18 @@ struct AkapenApp: App {
         } else if let url = URL(string: "https://github.com/yosshibox/akapen/blob/main/docs/manual/akapen-manual-ja.md") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// Renders SettingsView into a PNG without showing a window (offscreen
+    /// NSHostingView) — used by automated layout verification.
+    private static func renderSettingsSnapshot(to path: String) {
+        let host = NSHostingView(rootView: SettingsView())
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 620)
+        host.layoutSubtreeIfNeeded()
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?
+            .write(to: URL(fileURLWithPath: path))
     }
 
     private static func applyDockIcon() {

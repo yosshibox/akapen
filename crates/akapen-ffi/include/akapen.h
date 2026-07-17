@@ -113,6 +113,21 @@ void akapen_set_output_naming(AkapenEngine *engine,
 int akapen_export_to_dir(AkapenEngine *engine, const char *dir, const char *stem);
 
 /* ──────────────────────────────────────────────────────────────────────────
+ * Document swap (frame navigation without GPU re-attach).
+ *
+ * akapen_swap_document exchanges the documents (image + strokes + history) of
+ * `active` and `standby`, keeping `active`'s GPU surface attached and
+ * refreshing it from the incoming document. After the call, `standby` holds
+ * the previous document (cache it to preserve per-image strokes/undo across
+ * back-and-forth navigation, spec §4.5). Returns 0 on success.
+ *
+ * akapen_replace_document is the consuming variant: `replacement` is freed on
+ * success and must not be used afterwards. Returns 0 on success.
+ * ────────────────────────────────────────────────────────────────────────── */
+int akapen_swap_document(AkapenEngine *active, AkapenEngine *standby);
+int akapen_replace_document(AkapenEngine *active, AkapenEngine *replacement);
+
+/* ──────────────────────────────────────────────────────────────────────────
  * Key mapping (spec §3).
  *
  * akapen_resolve_key is a pure, engine-independent function: the shell passes a

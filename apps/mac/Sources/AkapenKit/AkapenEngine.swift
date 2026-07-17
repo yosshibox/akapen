@@ -179,6 +179,15 @@ public final class AkapenEngine {
         return AkapenImage(width: w, height: h, rgba: buf)
     }
 
+    /// Swaps this engine's document (image + strokes + history) with
+    /// `standby`'s, keeping this engine's GPU surface attached (frame
+    /// navigation without re-attach, spec §4.5). After a successful swap,
+    /// `standby` holds the previous document — keep it cached to preserve
+    /// per-image strokes/undo across back-and-forth navigation.
+    public func swapDocument(with standby: AkapenEngine) -> Bool {
+        akapen_swap_document(handle, standby.handle) == 0
+    }
+
     /// Navigator thumbnail (V1.2): the display composite downscaled by the
     /// core to fit `maxW` × `maxH` (aspect preserved, never upscaled). Returns
     /// nil when no image is loaded. Same size-probe convention as

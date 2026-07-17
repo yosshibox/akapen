@@ -19,7 +19,9 @@ struct ContentView: View {
                 loadedWorkspace
             }
         }
-        .frame(minWidth: 720, minHeight: 480)
+        // 最小サイズは右ドック(ナビゲーター+ツール+フェーダー+パレット ≈ 640pt)
+        // が欠けない高さを保証する。
+        .frame(minWidth: 960, minHeight: 720)
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted, perform: handleDrop)
         .transaction { transaction in transaction.animation = nil }
     }
