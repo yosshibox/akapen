@@ -14,15 +14,25 @@ public readonly record struct PaletteSwatch(int Index, uint Rgba, UiRect Bounds)
 public readonly record struct WorkspaceLayout(UiRect Canvas, UiRect Dock, UiRect Status);
 public readonly record struct EmptyStateLayout(UiRect FolderButton, UiRect DropTarget);
 
+/// <summary>
+/// Photoshop-style navigator geometry (V1.1): the thumbnail box at the top of
+/// the right dock plus its zoom row (zoom-out button, percentage label,
+/// zoom-in button).
+/// </summary>
+public readonly record struct NavigatorLayout(UiRect Thumbnail, UiRect ZoomOut, UiRect ZoomLabel, UiRect ZoomIn);
+
 /// <summary>Pure geometry mirrored from the Mac loaded workspace.</summary>
 public static class DockLayout
 {
-    public const int Width = 104;
+    // V1.1: widened from 104 to fit the Photoshop-style navigator panel.
+    public const int Width = 168;
     public const int ButtonSize = 28;
     public const int Padding = 12;
     public const int StatusHeight = 24;
     public const int SizeControlWidth = 88;
     public const int SizeControlHeight = 248;
+    public const int NavigatorThumbHeight = 96;
+    public const int NavigatorZoomRowHeight = 24;
 
     public static DockGroup GroupFor(UiCommandId command) => command switch
     {
@@ -75,11 +85,31 @@ public static class DockLayout
     public static UiRect CanvasBounds(int clientWidth, int clientHeight, DockSide side, float scale = 1) =>
         Workspace(clientWidth, clientHeight, side, scale).Canvas;
 
+    /// <summary>
+    /// Navigator panel at the top of the dock (V1.1): thumbnail box plus a
+    /// zoom row (− button / percentage / + button) directly under it.
+    /// </summary>
+    public static NavigatorLayout Navigator(int clientWidth, int clientHeight, DockSide side, float scale = 1)
+    {
+        UiRect dock = DockBounds(clientWidth, clientHeight, side, scale);
+        int inset = Px(Padding, scale);
+        var thumb = new UiRect(dock.X + inset, dock.Y + inset,
+            Math.Max(1, dock.Width - inset * 2), Px(NavigatorThumbHeight, scale));
+        int rowY = thumb.Bottom + Px(4, scale);
+        int rowH = Px(NavigatorZoomRowHeight, scale);
+        int btn = rowH;
+        return new NavigatorLayout(
+            thumb,
+            new UiRect(thumb.X, rowY, btn, rowH),
+            new UiRect(thumb.X + btn, rowY, Math.Max(1, thumb.Width - btn * 2), rowH),
+            new UiRect(thumb.Right - btn, rowY, btn, rowH));
+    }
+
     public static IReadOnlyList<DockButton> Buttons(int clientWidth, int clientHeight, DockSide side, float scale = 1)
     {
         UiRect dock = DockBounds(clientWidth, clientHeight, side, scale);
         int size = Px(ButtonSize, scale), gap = Px(6, scale);
-        int y = dock.Y + Px(16, scale);
+        int y = Navigator(clientWidth, clientHeight, side, scale).ZoomOut.Bottom + Px(12, scale);
         int totalWidth = size * 3 + gap * 2;
         int x = dock.X + (dock.Width - totalWidth) / 2;
         return new[]
@@ -117,15 +147,21 @@ public static class DockLayout
         int x = dock.X + (dock.Width - width) / 2;
         int buttonBottom = Buttons(clientWidth, clientHeight, side, scale).Max(button => button.Bounds.Bottom);
         int y = buttonBottom + Px(10, scale);
-        return new UiRect(x, y, width, Math.Min(height, Math.Max(Px(220, scale), dock.Bottom - y - Px(12, scale))));
+        // Leave room for the palette below (5 rows of swatches + margins) so
+        // the navigator (V1.1) + tools + fader + palette all fit the dock; the
+        // fader flexes between 120 and its canonical 248 DIP.
+        int paletteNeed = Px(28, scale) + 5 * Px(32, scale) + Px(12, scale);
+        int available = dock.Bottom - y - paletteNeed;
+        return new UiRect(x, y, width, Math.Clamp(available, Px(120, scale), height));
     }
 
     /// <summary>Horizontal separator y-coordinates in the canonical right dock.</summary>
     public static IReadOnlyList<int> GroupSeparators(int clientWidth, int clientHeight, DockSide side, float scale = 1)
     {
         UiRect dock = DockBounds(clientWidth, clientHeight, side, scale);
+        NavigatorLayout navigator = Navigator(clientWidth, clientHeight, side, scale);
         UiRect size = BrushFaderBounds(clientWidth, clientHeight, side, scale);
-        return new[] { size.Y - Px(5, scale), size.Bottom + Px(14, scale) };
+        return new[] { navigator.ZoomOut.Bottom + Px(6, scale), size.Y - Px(5, scale), size.Bottom + Px(14, scale) };
     }
 
     public static UiCommandId? HitTest(int x, int y, int clientWidth, int clientHeight, DockSide side, float scale = 1) =>

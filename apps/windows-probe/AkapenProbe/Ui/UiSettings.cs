@@ -14,6 +14,7 @@ public sealed class UiSettings
     [JsonPropertyName("save.locationMode")] public string SaveLocationMode { get; set; } = "siblingSubfolder";
     [JsonPropertyName("save.folderName")] public string OutputFolderName { get; set; } = "_review";
     [JsonPropertyName("save.customPath")] public string CustomOutputPath { get; set; } = "";
+    [JsonPropertyName("keymap.preset")] public string KeymapPreset { get; set; } = "photoshop";
 }
 
 public static class UiSettingsStore
@@ -26,6 +27,14 @@ public static class UiSettingsStore
 
     public static CanvasBackdrop ParseBackdrop(string? value) =>
         string.Equals(value, "black", StringComparison.OrdinalIgnoreCase) ? CanvasBackdrop.Black : CanvasBackdrop.White;
+
+    public static KeymapPresetKind ParseKeymapPreset(string? value) =>
+        string.Equals(value, "clipstudio", StringComparison.OrdinalIgnoreCase)
+            ? KeymapPresetKind.ClipStudio
+            : KeymapPresetKind.Photoshop;
+
+    public static string KeymapPresetName(KeymapPresetKind kind) =>
+        kind == KeymapPresetKind.ClipStudio ? "clipstudio" : "photoshop";
 
     public static SaveLocationMode ParseSaveLocation(string? value) => value switch
     {

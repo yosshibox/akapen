@@ -12,13 +12,25 @@ to install .NET or Windows App Runtime.
   the native file picker; the empty-state button selects an image folder.
 - Mouse or pen draws; `WM_POINTER` pen pressure is passed to the Rust core.
   Touch is ignored while a pen is active as the initial palm-rejection policy.
-- `P` pen, `E` eraser, `Ctrl+Z` undo, `Ctrl+Y` redo.
-- `+`/`-` zoom, `F` fit, `R` rotate 90 degrees, Space+drag pan.
-- `[`/`]` changes brush size; `Ctrl+0` fits the canvas and `Ctrl+Alt+0`
-  returns to 100%.
+- Shortcuts resolve through the shared Rust keymap with a user-selectable
+  preset (V1.1). The default is the **Photoshop** preset: `B`/`P` pen, `E`
+  eraser, `Ctrl+Z` undo, `Ctrl+Shift+Z` redo (`Ctrl+Alt+Z` also steps
+  backward; `Ctrl+Y` is deliberately unmapped, as in Photoshop), `Ctrl+0`
+  fit, `Ctrl+1` / `Ctrl+Alt+0` 100%, `R` / `Shift+R` rotate the view by
+  15 degrees. The **CLIP STUDIO** preset (settings) restores the spec §3
+  table (`Ctrl+Y` redo, `-`/`^` rotate 15 degrees, `R` = rect tool key).
+- `+`/`-` zoom, `F` fit, Space+drag pan.
+- Arrow keys: `←`/`→` previous/next image, `↑`/`↓` zoom in/out (V1.1). While
+  the brush fader is focused, `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` adjust
+  the brush size instead.
+- `[`/`]` changes brush size.
 - A single touch drag pans when no pen is active; touch is rejected while a
   pen is down as the MVP palm-rejection policy.
 - `PageUp`/`PageDown` move through neighboring image files.
+- A Photoshop-style navigator sits at the top of the right dock (V1.1): a
+  live thumbnail with the current viewport rectangle; click/drag it to
+  recenter the view, and use the `−`/`+` buttons or the percentage readout
+  for zoom.
 - `Ctrl+S` exports the non-destructive review set. For an image under `hoge`,
   the default folder is `hoge_review` beside the source: the flat PNG is kept
   directly there, while the transparent stroke PNG and JSON are placed under
