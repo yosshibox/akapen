@@ -27,7 +27,7 @@ let linkRust: [LinkerSetting] = [
 
 let package = Package(
     name: "Akapen",
-    platforms: [.macOS(.v12)],
+    platforms: [.macOS(.v13)],
     targets: [
         .target(name: "AkapenUIContract"),
 

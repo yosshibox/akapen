@@ -105,8 +105,10 @@ struct SettingsView: View {
     @AppStorage(AkapenSettingsKey.pressureEnabled) private var pressureEnabled: Bool = true
 
     var body: some View {
+        // macOS HIG: 設定ウィンドウは grouped Form(System Settings 様式)。
+        // 行のレイアウトは Form に任せ、独自の HStack/Spacer で崩さない。
         Form {
-            Section("ショートカット") {
+            Section {
                 Picker("キーマップ", selection: Binding(
                     get: { AkapenKeymapPreset.from(raw: keymapPresetRaw) },
                     set: { keymapPresetRaw = $0.rawValue }
@@ -116,19 +118,21 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.radioGroup)
+            } header: {
+                Text("ショートカット")
+            } footer: {
                 Text("Photoshop 準拠: B=ブラシ、⌘⇧Z=やり直し、⌘1=100%、R / ⇧R=回転(15°)\nCLIP STUDIO 準拠: P=ペン、⌘Y=やり直し、- / ^=回転(15°)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
             }
 
-            Section("ペン") {
+            Section {
                 Toggle("筆圧を使う（線の太さに反映する）", isOn: $pressureEnabled)
-                Text("オフのときは筆圧を無視し、一定の太さで描きます")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            } header: {
+                Text("ペン")
+            } footer: {
+                Text("オフのときは筆圧を無視し、一定の太さで描きます。")
             }
 
-            Section("出力先(§4.7)") {
+            Section {
                 Picker("方式", selection: Binding(
                     get: { dirMode },
                     set: { dirModeRaw = $0.rawValue }
@@ -145,78 +149,84 @@ struct SettingsView: View {
                 case .fixedAbsolute:
                     fixedDirField
                 }
-            }
-
-            Section("ファイル名の接尾辞(§4.3 / §4.7)") {
-                suffixField(
-                    label: "フラット PNG",
-                    example: "<stem>.<suffix>.png",
-                    text: $flatSuffix,
-                    defaultValue: AkapenSettingsDefault.flatSuffix
-                )
-                suffixField(
-                    label: "ストローク(PNG + JSON)",
-                    example: "<stem>.<suffix>.png / .json",
-                    text: $strokesSuffix,
-                    defaultValue: AkapenSettingsDefault.strokesSuffix
-                )
+            } header: {
+                Text("保存先")
+            } footer: {
+                outputFooter
             }
 
             Section {
-                Text("設定はこの Mac のユーザーごとに保存されます(OS 標準の設定置き場)。プロジェクト単位の上書きは将来検討です。")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                suffixField(label: "フラット PNG", text: $flatSuffix,
+                            defaultValue: AkapenSettingsDefault.flatSuffix)
+                suffixField(label: "ストローク (PNG + JSON)", text: $strokesSuffix,
+                            defaultValue: AkapenSettingsDefault.strokesSuffix)
+            } header: {
+                Text("ファイル名の接尾辞")
+            } footer: {
+                suffixFooter
+            }
+
+            Section {
+            } footer: {
+                Text("設定はこの Mac のユーザーごとに保存されます（OS 標準の設定置き場）。")
             }
         }
-        .padding(20)
-        .frame(width: 460)
+        .formStyle(.grouped)
+        .frame(width: 600, height: 620)
     }
 
-    // MARK: - besideInput モードのサブフォルダ名フィールド
+    // MARK: - 保存先の行
 
     private var subfolderField: some View {
-        let invalid = !isValidSubfolder(subfolderName)
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("サブフォルダ名")
-                Spacer()
-                TextField(AkapenSettingsDefault.subfolderName, text: $subfolderName)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(Color.red, lineWidth: invalid ? 2 : 0)
-                    )
+        TextField("サブフォルダ名", text: $subfolderName,
+                  prompt: Text(AkapenSettingsDefault.subfolderName))
+    }
+
+    private var fixedDirField: some View {
+        LabeledContent("固定パス") {
+            HStack(spacing: 8) {
+                TextField("", text: $fixedDir, prompt: Text("/path/to/reviews"))
+                    .labelsHidden()
+                Button("選択…") { chooseFixedDir() }
             }
-            Text(invalid
-                ? "パス区切り(/ や \\)や \".\" / \"..\" は使えません。空欄のときは既定の \"\(AkapenSettingsDefault.subfolderName)\" を使います。"
-                : "書き出し先は <入力ファイルのあるフォルダ>/\(subfolderName.isEmpty ? AkapenSettingsDefault.subfolderName : subfolderName)/ になります。")
-                .font(.caption)
-                .foregroundColor(invalid ? .red : .secondary)
         }
     }
 
-    // MARK: - fixedAbsolute モードの絶対パスフィールド
-
-    private var fixedDirField: some View {
-        let invalid = !isValidFixedDir(fixedDir)
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("固定パス")
-                TextField("/path/to/reviews", text: $fixedDir)
-                    .textFieldStyle(.roundedBorder)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(Color.red, lineWidth: invalid ? 2 : 0)
-                    )
-                Button("選択…") { chooseFixedDir() }
+    @ViewBuilder private var outputFooter: some View {
+        switch dirMode {
+        case .besideInput:
+            if isValidSubfolder(subfolderName) {
+                let name = subfolderName.isEmpty ? AkapenSettingsDefault.subfolderName : subfolderName
+                Text("書き出し先は <入力ファイルのあるフォルダ>/\(name)/ になります。")
+            } else {
+                Text("パス区切り（/ や \\）や「.」「..」は使えません。空欄のときは既定の「\(AkapenSettingsDefault.subfolderName)」を使います。")
+                    .foregroundStyle(.red)
             }
-            Text(invalid
-                ? "存在する絶対パス(/ で始まる)を指定してください。無効な指定はビルド時に入力フォルダ相対の \"\(AkapenSettingsDefault.subfolderName)\" にフォールバックします。"
-                : "全案件で共通の review 置き場として使います。")
-                .font(.caption)
-                .foregroundColor(invalid ? .red : .secondary)
+        case .fixedAbsolute:
+            if isValidFixedDir(fixedDir) {
+                Text("全案件で共通の review 置き場として使います。")
+            } else {
+                Text("存在する絶対パス（/ で始まる）を指定してください。無効な指定は入力フォルダ相対の「\(AkapenSettingsDefault.subfolderName)」にフォールバックします。")
+                    .foregroundStyle(.red)
+            }
         }
+    }
+
+    @ViewBuilder private var suffixFooter: some View {
+        if !isValidSuffix(flatSuffix) || !isValidSuffix(strokesSuffix) {
+            Text("接尾辞にはパス区切り（/ \\）やドット（.）を含めない、空でない文字列を指定してください。無効な入力は既定値に戻ります。")
+                .foregroundStyle(.red)
+        } else {
+            let flat = flatSuffix.isEmpty ? AkapenSettingsDefault.flatSuffix : flatSuffix
+            let strokes = strokesSuffix.isEmpty ? AkapenSettingsDefault.strokesSuffix : strokesSuffix
+            Text("例: <元ファイル名>.\(flat).png ／ <元ファイル名>.\(strokes).png / .json")
+        }
+    }
+
+    // MARK: - 接尾辞の行
+
+    private func suffixField(label: String, text: Binding<String>, defaultValue: String) -> some View {
+        TextField(label, text: text, prompt: Text(defaultValue))
     }
 
     private func chooseFixedDir() {
@@ -231,31 +241,6 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - サフィックスフィールド共通
-
-    private func suffixField(
-        label: String, example: String, text: Binding<String>, defaultValue: String
-    ) -> some View {
-        let invalid = !isValidSuffix(text.wrappedValue)
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(label)
-                Spacer()
-                TextField(defaultValue, text: text)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(Color.red, lineWidth: invalid ? 2 : 0)
-                    )
-            }
-            Text(invalid
-                ? "パス区切り(/ \\)やドット(.)を含めない、空でない文字列を指定してください。無効な入力は既定 \"\(defaultValue)\" に戻ります。"
-                : "例: \(example.replacingOccurrences(of: "<suffix>", with: text.wrappedValue.isEmpty ? defaultValue : text.wrappedValue))")
-                .font(.caption)
-                .foregroundColor(invalid ? .red : .secondary)
-        }
-    }
 }
 
 // MARK: - 入力検証(SettingsView と AppState で共有)
