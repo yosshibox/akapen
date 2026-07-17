@@ -3,23 +3,26 @@ import AkapenUIContract
 import AppKit
 import SwiftUI
 
-/// Loaded-state tool dock. Document/history/view commands remain in native
-/// menus and shortcuts; only the two ink tools and direct style controls are
-/// permanent here.
+/// Loaded-state right dock (V1.2, Windows V1.1 の写像): navigator on top,
+/// then the ink tools, the vertical brush fader and the 2×5 palette.
+/// Document/history/view commands remain in native menus and shortcuts.
 struct SidePanelView: View {
     @ObservedObject var state: AppState
 
     var body: some View {
-        HStack(spacing: 10) {
+        VStack(spacing: 10) {
+            NavigatorView(state: state)
+            dockDivider
             toolGroup
             dockDivider
-            palette
-            dockDivider
             sizeControl
+            dockDivider
+            palette
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(12)
+        .frame(width: CGFloat(AkapenUIMetrics.dockWidth))
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(Color(nsColor: .controlBackgroundColor))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("描画ツール")
@@ -27,7 +30,7 @@ struct SidePanelView: View {
 
     private var toolGroup: some View {
         HStack(spacing: 6) {
-            tool(.pen, symbol: "pencil.tip", label: "ペン", shortcut: "P")
+            tool(.pen, symbol: "pencil.tip", label: "ペン", shortcut: "B / P")
             tool(.eraser, symbol: "eraser", label: "消しゴム", shortcut: "E")
         }
     }
@@ -49,46 +52,39 @@ struct SidePanelView: View {
     }
 
     private var palette: some View {
-        GeometryReader { proxy in
-            let spacing: CGFloat = 4
-            let diameter = max(
-                CGFloat(PaletteContract.minimumDiameter),
-                min(24, (proxy.size.width - spacing * 9) / 10)
-            )
-            HStack(spacing: spacing) {
-                ForEach(AkapenPalette.colors) { swatch in
-                    Button { state.selectColor(hex: swatch.hex) } label: {
-                        Circle()
-                            .fill(swatch.color)
-                            .frame(width: diameter, height: diameter)
-                            .overlay {
-                                Circle().stroke(
-                                    state.selectedColorHex == swatch.hex
-                                        ? Color.accentColor : Color.primary.opacity(0.22),
-                                    lineWidth: state.selectedColorHex == swatch.hex ? 3 : 1
-                                )
+        let diameter: CGFloat = 24
+        let columns = [GridItem(.fixed(32), spacing: 8), GridItem(.fixed(32), spacing: 8)]
+        return LazyVGrid(columns: columns, spacing: 6) {
+            ForEach(AkapenPalette.colors) { swatch in
+                Button { state.selectColor(hex: swatch.hex) } label: {
+                    Circle()
+                        .fill(swatch.color)
+                        .frame(width: diameter, height: diameter)
+                        .overlay {
+                            Circle().stroke(
+                                state.selectedColorHex == swatch.hex
+                                    ? Color.accentColor : Color.primary.opacity(0.22),
+                                lineWidth: state.selectedColorHex == swatch.hex ? 3 : 1
+                            )
+                        }
+                        .overlay {
+                            if swatch.hex == "#FFFFFF" {
+                                Circle().stroke(Color.black.opacity(0.18), lineWidth: 1)
                             }
-                            .overlay {
-                                if swatch.hex == "#FFFFFF" {
-                                    Circle().stroke(Color.black.opacity(0.18), lineWidth: 1)
-                                }
-                            }
-                            .frame(width: max(20, diameter), height: 32)
-                    }
-                    .buttonStyle(.plain)
-                    .help(swatch.name)
-                    .accessibilityLabel(swatch.name)
-                    .accessibilityAddTraits(state.selectedColorHex == swatch.hex ? .isSelected : [])
+                        }
+                        .frame(width: 32, height: 30)
                 }
+                .buttonStyle(.plain)
+                .help(swatch.name)
+                .accessibilityLabel(swatch.name)
+                .accessibilityAddTraits(state.selectedColorHex == swatch.hex ? .isSelected : [])
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         }
-        .frame(minWidth: 176, maxWidth: .infinity, minHeight: 32, maxHeight: 40)
         .accessibilityLabel("描画色")
     }
 
     private var sizeControl: some View {
-        HStack(spacing: 6) {
+        VStack(spacing: 4) {
             Text("サイズ")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -108,7 +104,7 @@ struct SidePanelView: View {
     }
 
     private var dockDivider: some View {
-        Divider().frame(height: 48)
+        Divider()
     }
 }
 

@@ -25,11 +25,14 @@ struct ContentView: View {
     }
 
     private var loadedWorkspace: some View {
+        // V1.2 (Windows V1.1 の写像): canvas left, 168pt right dock
+        // (navigator / tools / fader / palette), status bar at the bottom.
         VStack(spacing: 0) {
-            CanvasView(state: state).background(Color(white: 0.15))
-            Divider()
-            SidePanelView(state: state)
-                .frame(height: CGFloat(AkapenUIMetrics.toolDockHeight))
+            HStack(spacing: 0) {
+                CanvasView(state: state).background(Color(white: 0.15))
+                Divider()
+                SidePanelView(state: state)
+            }
             Divider()
             statusBar
         }

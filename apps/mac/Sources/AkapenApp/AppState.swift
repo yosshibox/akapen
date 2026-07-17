@@ -18,6 +18,8 @@ enum CanvasCommand: Equatable {
     case rotateRight
     case fit
     case actualSize
+    /// Navigator click/drag (V1.2): center the view on this image pixel.
+    case centerOn(Double, Double)
 }
 
 /// Portable UI command IDs shared by the Mac dock and future Windows/VEDA
@@ -60,6 +62,43 @@ final class AppState: ObservableObject {
 
     /// Bumped whenever the composited image changes, so the canvas redraws.
     @Published var revision = 0
+
+    // ── Navigator (V1.2) ─────────────────────────────────────────────────
+    // The canvas view reports its live transform here so the navigator can
+    // draw the viewport polygon; the thumbnail is re-read from the core only
+    // on content changes (open / stroke end / undo / redo), never per frame.
+    @Published var viewZoom: Double = 1
+    @Published var viewPanX: Double = 0
+    @Published var viewPanY: Double = 0
+    @Published var viewRotationDeg: Double = 0
+    @Published var canvasSize: CGSize = .zero
+    @Published var navThumbnail: NSImage?
+    /// Natural size of the loaded image (navigator mapping).
+    @Published var imageSize: CGSize = .zero
+
+    /// Called by the canvas whenever zoom/pan/rotation/bounds change.
+    func reportViewTransform(zoom: Double, panX: Double, panY: Double,
+                             rotationDeg: Double, canvasSize: CGSize) {
+        // Deferred: the canvas reports from within SwiftUI's update pass
+        // (updateNSView → refresh), where publishing directly is not allowed.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.viewZoom != zoom { self.viewZoom = zoom }
+            if self.viewPanX != panX { self.viewPanX = panX }
+            if self.viewPanY != panY { self.viewPanY = panY }
+            if self.viewRotationDeg != rotationDeg { self.viewRotationDeg = rotationDeg }
+            if self.canvasSize != canvasSize { self.canvasSize = canvasSize }
+        }
+    }
+
+    /// Re-reads the navigator thumbnail from the core (content changes only).
+    func refreshNavigatorThumbnail() {
+        guard let e = engine, let thumb = e.thumbnail() else {
+            navThumbnail = nil
+            return
+        }
+        navThumbnail = nsImage(fromRGBA: thumb.rgba, width: thumb.width, height: thumb.height)
+    }
 
     /// Whether to attempt the GPU (wgpu/Metal) render path (spec §7.4-6,
     /// Phase e). Default true; disabled by the `AKAPEN_NO_GPU` environment
@@ -124,6 +163,8 @@ final class AppState: ObservableObject {
         let (w, h) = e.size
         statusText = "\(url.lastPathComponent) — \(w)×\(h)"
         workspacePhase = .loaded
+        imageSize = CGSize(width: w, height: h)
+        refreshNavigatorThumbnail()
         revision += 1
     }
 
@@ -152,6 +193,7 @@ final class AppState: ObservableObject {
             pressureWarning = e.pressureStuck
             hasUnsavedStrokes = true // 1ストローク完了 = このフレームは要保存
             refreshHistory()
+            refreshNavigatorThumbnail()
         }
         revision += 1
     }
@@ -160,6 +202,7 @@ final class AppState: ObservableObject {
         guard let e = engine, e.canUndo else { return }
         e.undo()
         refreshHistory()
+        refreshNavigatorThumbnail()
         revision += 1
     }
 
@@ -167,6 +210,7 @@ final class AppState: ObservableObject {
         guard let e = engine, e.canRedo else { return }
         e.redo()
         refreshHistory()
+        refreshNavigatorThumbnail()
         revision += 1
     }
 

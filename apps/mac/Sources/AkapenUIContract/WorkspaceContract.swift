@@ -23,6 +23,10 @@ public enum AkapenUIMetrics {
     public static let statusHeight = 24
     public static let sizeControlWidth = 48
     public static let sizeControlHeight = 72
+    /// V1.2 (Windows V1.1 の写像): the right dock width shared with the
+    /// Windows shell's DockLayout.Width (168 DIP).
+    public static let dockWidth = 168
+    public static let navigatorThumbHeight = 96
 }
 
 public enum LoadedDockContract {
@@ -35,7 +39,10 @@ public enum SwatchShape {
 
 public enum PaletteContract {
     public static let colorCount = 10
-    public static let rowCount = 1
+    /// V1.2: two symmetric columns × five rows in the vertical right dock
+    /// (Windows V1.1 と同構成).
+    public static let rowCount = 5
+    public static let columnCount = 2
     public static let shape = SwatchShape.circle
     public static let minimumDiameter = 14
 }

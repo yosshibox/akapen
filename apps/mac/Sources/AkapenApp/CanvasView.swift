@@ -11,6 +11,7 @@
 // composite to keep the pipeline correct first.
 
 import AkapenKit
+import AkapenUIContract
 import AppKit
 import CAkapen
 import SwiftUI
@@ -125,6 +126,7 @@ final class CanvasNSView: NSView {
         pan = .zero
         rotationDeg = 0
         fittedOnce = true
+        syncViewState()
     }
 
     /// Fit-to-window (Cmd+0 / on new image).
@@ -415,6 +417,7 @@ final class CanvasNSView: NSView {
         rotationDeg += deg
         needsDisplay = true
         renderGPU()
+        syncViewState()
     }
 
     func perform(_ command: CanvasCommand) {
@@ -427,7 +430,28 @@ final class CanvasNSView: NSView {
         case .rotateRight: rotate(by: 15)
         case .fit: fitToWindow()
         case .actualSize: setActualSize()
+        case .centerOn(let ix, let iy):
+            // Navigator click/drag (V1.2): pan so the image pixel lands at
+            // the canvas center (shared NavigatorMath contract).
+            guard let sz = imageSize else { break }
+            let p = NavigatorMath.panToCenter(
+                onImageX: ix, imageY: iy,
+                imageW: Double(sz.width), imageH: Double(sz.height),
+                zoom: Double(zoom), rotationDeg: Double(rotationDeg))
+            pan = CGSize(width: p.x, height: p.y)
+            needsDisplay = true
+            renderGPU()
         }
+        syncViewState()
+    }
+
+    /// Publishes the live view transform to AppState for the navigator (V1.2).
+    /// Cheap (a handful of Doubles) and deferred inside AppState, so calling
+    /// it after every transform mutation is fine.
+    private func syncViewState() {
+        state?.reportViewTransform(
+            zoom: Double(zoom), panX: Double(pan.width), panY: Double(pan.height),
+            rotationDeg: Double(rotationDeg), canvasSize: bounds.size)
     }
 
     // MARK: keymap (spec §3)
@@ -566,6 +590,7 @@ final class CanvasNSView: NSView {
         zoom = max(0.02, min(20, zoom * factor))
         needsDisplay = true
         renderGPU()
+        syncViewState()
     }
 
     /// 100% view (1 image pixel : 1 view point), centered.
@@ -574,6 +599,7 @@ final class CanvasNSView: NSView {
         pan = .zero
         needsDisplay = true
         renderGPU()
+        syncViewState()
     }
 
     private func adjustBrush(_ delta: Double) {

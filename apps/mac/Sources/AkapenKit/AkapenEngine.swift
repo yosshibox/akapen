@@ -179,6 +179,24 @@ public final class AkapenEngine {
         return AkapenImage(width: w, height: h, rgba: buf)
     }
 
+    /// Navigator thumbnail (V1.2): the display composite downscaled by the
+    /// core to fit `maxW` × `maxH` (aspect preserved, never upscaled). Returns
+    /// nil when no image is loaded. Same size-probe convention as
+    /// `compositeImage`, but the reduction happens on the Rust side so the
+    /// shell never copies the full-resolution composite.
+    public func thumbnail(maxW: UInt32 = 256, maxH: UInt32 = 256) -> AkapenImage? {
+        var w: UInt32 = 0
+        var h: UInt32 = 0
+        let needed = akapen_thumbnail_rgba(handle, maxW, maxH, nil, 0, &w, &h)
+        guard needed > 0, w > 0, h > 0 else { return nil }
+        var buf = [UInt8](repeating: 0, count: needed)
+        let written = buf.withUnsafeMutableBufferPointer { p in
+            akapen_thumbnail_rgba(handle, maxW, maxH, p.baseAddress, p.count, &w, &h)
+        }
+        guard written == needed else { return nil }
+        return AkapenImage(width: Int(w), height: Int(h), rgba: buf)
+    }
+
     /// Sets the artifact-name suffixes (spec §4.7). Passing `nil` for either
     /// argument resets *only* that field to the built-in default (`review` /
     /// `strokes`). The C ABI additionally rejects suffixes that contain a path
