@@ -43,9 +43,19 @@ struct ContentView: View {
     private var emptyState: some View {
         VStack(spacing: 20) {
             VStack(spacing: 6) {
-                Image(systemName: "pencil.and.outline")
-                    .font(.system(size: 32, weight: .regular))
-                    .foregroundStyle(Color.accentColor)
+                // 起動ロゴ: アプリアイコン(朱の一筆)。「赤ペン」なので赤で統一
+                // (Windows 版とも共通の図案。青いテンプレートアイコンは使わない)。
+                if let logo = Bundle.module.url(forResource: "akapen-icon", withExtension: "png")
+                    .flatMap({ NSImage(contentsOf: $0) }) {
+                    Image(nsImage: logo)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 64, height: 64)
+                } else {
+                    Image(systemName: "pencil.and.outline")
+                        .font(.system(size: 32, weight: .regular))
+                        .foregroundStyle(AkapenBrand.red)
+                }
                 Text("Akapen").font(.title2.weight(.semibold))
                 Text("画像フォルダを選ぶか、画像をドロップして始めます。")
                     .font(.callout).foregroundStyle(.secondary)

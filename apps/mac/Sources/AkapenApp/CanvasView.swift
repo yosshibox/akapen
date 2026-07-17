@@ -122,17 +122,16 @@ final class CanvasNSView: NSView {
 
     /// Returns true when the event was consumed. Mirrors keyDown/keyUp but
     /// runs before the responder chain (focus-independent).
+    ///
+    /// V1.2 BLOCK fix: the previous guard deferred to ANY focused view that
+    /// accepted first responder — which is always true for SwiftUI's hosting
+    /// view, so every key was dropped. Defer only to real text inputs (IME /
+    /// fields) and controls that explicitly opt in via
+    /// AkapenKeyConsumingControl (the brush fader).
     private func handleMonitoredKey(_ event: NSEvent) -> Bool {
-        // Let focused text inputs and the brush fader keep their keys.
-        if let responder = window?.firstResponder,
-           responder is NSText || responder is NSTextView {
-            return false
-        }
-        if let responder = window?.firstResponder as? NSView,
-           responder !== self, responder.acceptsFirstResponder,
-           !(responder is CanvasNSView) {
-            // e.g. the brush fader (arrow keys adjust the size while focused).
-            return false
+        if let responder = window?.firstResponder {
+            if responder is NSText || responder is NSTextView { return false }
+            if responder is AkapenKeyConsumingControl { return false }
         }
         if event.type == .keyUp {
             if event.charactersIgnoringModifiers == " " { spaceDown = false }

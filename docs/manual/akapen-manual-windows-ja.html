@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Akapen ユーザーマニュアル</title>
+<title>Akapen ユーザーマニュアル(Windows)</title>
 <style>
   :root {
     --ink: #282522; --muted: #716b66; --accent: #c84232;
@@ -73,8 +73,8 @@
 </head>
 <body>
 <header>
-  <h1><span>Akapen</span> ユーザーマニュアル</h1>
-  <p>対象バージョン: 1.1.2（Windows）｜最終更新: 2026-07-17</p>
+  <h1><span>Akapen</span> ユーザーマニュアル（Windows）</h1>
+  <p>対象バージョン: 1.2.0（Windows）｜最終更新: 2026-07-17</p>
 </header>
 <main>
 
@@ -99,13 +99,14 @@
 
 <h2 id="install"><span class="num">1.</span>インストール</h2>
 <ol>
-  <li><code>AkapenSetup-&lt;version&gt;-win-x64.exe</code> を実行します。</li>
-  <li>使用許諾契約書（EULA）を確認し、「同意してインストール」を押します。</li>
-  <li>既定では <code>%LOCALAPPDATA%\Programs\Akapen</code> にインストールされ、デスクトップとスタートメニューにショートカットが作られます。</li>
+  <li>お使いの CPU に合わせて <code>Akapen-&lt;version&gt;-win-x64.msi</code>（Intel/AMD）または <code>Akapen-&lt;version&gt;-win-arm64.msi</code>（Snapdragon 等）を実行します。</li>
+  <li>使用許諾契約書（EULA）に同意してインストールします。</li>
+  <li><code>%LOCALAPPDATA%\Programs\Akapen</code> にインストールされ、デスクトップとスタートメニューにショートカットが作られます。アンインストールは「アプリと機能」から行えます。</li>
 </ol>
-<p>C ドライブの空き容量が少ない端末では、インストール先を指定できます:</p>
-<pre><code>AkapenSetup.exe --install-dir D:\Akapen</code></pre>
-<div class="note">展開スクリプト等の無人インストールでは <code>--accept-eula</code> を併用できます（使用許諾契約の条項はその場合も適用されます）。.NET ランタイムの別途インストールは不要です。</div>
+<p>無人インストール / アンインストール:</p>
+<pre><code>msiexec /i Akapen-&lt;version&gt;-win-x64.msi /qn
+msiexec /x Akapen-&lt;version&gt;-win-x64.msi /qn</code></pre>
+<div class="note">自己展開 EXE 版（<code>--install-dir D:\Akapen</code> / <code>--accept-eula</code> 対応）も補助的に配布しています。.NET ランタイムの別途インストールは不要です。</div>
 
 <h2 id="flow"><span class="num">2.</span>基本の流れ</h2>
 <ol>

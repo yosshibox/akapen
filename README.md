@@ -15,7 +15,7 @@ flow to the next frame.
 > 配布用インストーラは GitHub Releases および `dist/`。
 > 本リポジトリはprivate運用を継続する。
 
-**📖 ユーザーマニュアル: [docs/manual/akapen-manual-ja.md](docs/manual/akapen-manual-ja.md)**
+**📖 ユーザーマニュアル: [Windows](docs/manual/akapen-manual-windows-ja.md) ／ [Mac](docs/manual/akapen-manual-mac-ja.md)**(HTML版はアプリのヘルプメニューから)
 
 ## Scope / スコープ
 

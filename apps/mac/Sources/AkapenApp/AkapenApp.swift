@@ -41,6 +41,23 @@ struct AkapenApp: App {
                         Self.renderSettingsSnapshot(to: args[i + 1])
                         NSApp.terminate(nil)
                     }
+                    if let i = args.firstIndex(of: "--render-icons"), args.indices.contains(i + 1) {
+                        let strip = HStack(spacing: 12) {
+                            ForEach(["tool.arrow", "tool.pen", "tool.eraser",
+                                     "document.open", "history.undo"], id: \.self) { name in
+                                AkapenIconView(name: name).frame(width: 32, height: 32)
+                            }
+                        }.padding(16).background(Color(nsColor: .windowBackgroundColor))
+                        let host = NSHostingView(rootView: strip)
+                        host.frame = NSRect(x: 0, y: 0, width: 280, height: 64)
+                        host.layoutSubtreeIfNeeded()
+                        if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                            host.cacheDisplay(in: host.bounds, to: rep)
+                            try? rep.representation(using: .png, properties: [:])?
+                                .write(to: URL(fileURLWithPath: args[i + 1]))
+                        }
+                        NSApp.terminate(nil)
+                    }
                 }
         }
         // 初回起動の既定サイズ(2回目以降は frameAutosave が優先)。

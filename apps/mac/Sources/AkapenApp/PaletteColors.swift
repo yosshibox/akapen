@@ -61,3 +61,10 @@ extension Color {
         return value.allSatisfy { $0.isHexDigit }
     }
 }
+
+
+/// Akapen のブランド色(朱)。Windows シェルの NativeUiRenderer.Accent
+/// (0xFFC84232) と同値。選択状態・ビューポート枠・ロゴに使う。
+enum AkapenBrand {
+    static let red = Color(red: 0xC8 / 255.0, green: 0x42 / 255.0, blue: 0x32 / 255.0)
+}

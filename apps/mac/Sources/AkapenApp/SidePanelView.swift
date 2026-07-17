@@ -31,18 +31,19 @@ struct SidePanelView: View {
     private var toolGroup: some View {
         HStack(spacing: 6) {
             // 矢印(操作なし)・ペン・消しゴム — Windows V1.1 の3ボタン構成。
-            toolButton(symbol: "cursorarrow", label: "矢印", shortcut: "A",
+            // アイコンは両シェル共通の正本スプライト(assets/icons)。
+            toolButton(symbol: "tool.arrow", label: "矢印", shortcut: "A",
                        selected: state.arrowMode) {
                 state.arrowMode = true
             }
-            toolButton(symbol: "pencil", label: "ペン", shortcut: "B / P",
+            toolButton(symbol: "tool.pen", label: "ペン", shortcut: "B / P",
                        selected: !state.arrowMode && state.tool == .pen) {
                 state.arrowMode = false
                 state.requestCanvas(.draw)
                 state.tool = .pen
                 state.applyToolState()
             }
-            toolButton(symbol: "eraser", label: "消しゴム", shortcut: "E",
+            toolButton(symbol: "tool.eraser", label: "消しゴム", shortcut: "E",
                        selected: !state.arrowMode && state.tool == .eraser) {
                 state.arrowMode = false
                 state.requestCanvas(.draw)
@@ -55,8 +56,8 @@ struct SidePanelView: View {
     private func toolButton(symbol: String, label: String, shortcut: String,
                             selected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 16, weight: .medium))
+            AkapenIconView(name: symbol, color: selected ? AkapenBrand.red : .primary)
+                .frame(width: 22, height: 22)
                 .frame(width: 32, height: 32)
         }
         .buttonStyle(CompactToolButtonStyle(selected: selected))
@@ -162,7 +163,11 @@ private struct CompactBrushSizeControl: NSViewRepresentable {
     }
 }
 
-private final class CompactBrushSizeNSView: NSView {
+/// Marker for controls that keep keyboard input while focused (the canvas's
+/// window-level key monitor defers to them — see CanvasNSView).
+protocol AkapenKeyConsumingControl: AnyObject {}
+
+private final class CompactBrushSizeNSView: NSView, AkapenKeyConsumingControl {
     var value = 14.0
     var inkColor = NSColor.systemRed
     var onValueChanged: ((Double) -> Void)?

@@ -1,6 +1,6 @@
-# Akapen ユーザーマニュアル
+# Akapen ユーザーマニュアル(Windows)
 
-対象バージョン: 1.1.2（Windows） / 最終更新: 2026-07-17
+対象バージョン: 1.2.0（Windows） / 最終更新: 2026-07-17
 
 Akapen（赤ペン）は、アニメ制作の作画監督・演出が、提出された作画（1枚絵・
 フレーム連番）に赤ペンの修正指示を入れ、元画像を壊さず別フォルダへ保存し、
@@ -10,19 +10,21 @@ Akapen（赤ペン）は、アニメ制作の作画監督・演出が、提出�
 
 ## 1. インストール
 
-1. `AkapenSetup-<version>-win-x64.exe` を実行します。
-2. 使用許諾契約書（EULA）を確認し、「同意してインストール」を押します。
-3. 既定では `%LOCALAPPDATA%\Programs\Akapen` にインストールされ、
-   デスクトップとスタートメニューにショートカットが作られます。
-4. C ドライブの空き容量が少ない端末では、コマンドラインから
-   インストール先を指定できます:
+1. お使いの CPU に合わせて `Akapen-<version>-win-x64.msi`（Intel/AMD）
+   または `Akapen-<version>-win-arm64.msi`（Snapdragon 等）を実行します。
+2. 使用許諾契約書（EULA）に同意してインストールします。
+3. `%LOCALAPPDATA%\Programs\Akapen` にインストールされ、デスクトップと
+   スタートメニューにショートカットが作られます。アンインストールは
+   Windows の「アプリと機能」から行えます。
+4. 無人インストール / アンインストール:
 
    ```bat
-   AkapenSetup.exe --install-dir D:\Akapen
+   msiexec /i Akapen-<version>-win-x64.msi /qn
+   msiexec /x Akapen-<version>-win-x64.msi /qn
    ```
 
-   ※ 展開スクリプト等の無人インストールでは `--accept-eula` を併用できます
-   （使用許諾契約の条項はその場合も適用されます）。
+   ※ 自己展開 EXE 版（`--install-dir` / `--accept-eula` 対応）も補助的に
+   配布しています。
 
 .NET ランタイムや Windows App Runtime の別途インストールは不要です。
 
