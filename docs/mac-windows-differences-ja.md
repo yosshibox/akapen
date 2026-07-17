@@ -47,7 +47,7 @@ Mac 版は同じ操作体系を macOS の流儀へ翻訳する。本書は「意
 
 | 項目 | Windows | Mac | 補足 |
 |---|---|---|---|
-| 配布形式 | MSI（推奨）/ 自己展開 EXE | dmg（Akapen.app） | Mac は署名・公証が前提（未署名ビルドは右クリック→開く） |
+| 配布形式 | MSI（全アーキテクチャ正式）/ 自己展開 EXE（補助） | dmg（Akapen.app、**未署名**） | Mac の署名・公証は行わない方針（発注者決定 2026-07-17）。初回起動は右クリック→「開く」 |
 | EULA の提示 | インストーラの同意画面（MSI は WixUI） | dmg に「使用許諾契約.txt」を同梱（公証版でライセンス表示を検討） | 文面は共通（`apps/windows/installer/EULA-ja.txt`） |
 | 最低対応 OS | Windows 10 x64 / arm64 | macOS 13（Ventura）以降 | grouped Form 等の SwiftUI API 要件 |
 | マニュアル | exe 隣の `manual\akapen-manual-ja.html`（ヘルプから起動） | アプリバンドル内リソース（ヘルプから起動） | 同一 HTML の同期コピー |
