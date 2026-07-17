@@ -15,6 +15,9 @@ public sealed class UiSettings
     [JsonPropertyName("save.folderName")] public string OutputFolderName { get; set; } = "_review";
     [JsonPropertyName("save.customPath")] public string CustomOutputPath { get; set; } = "";
     [JsonPropertyName("keymap.preset")] public string KeymapPreset { get; set; } = "photoshop";
+    // V1.1.1: pen pressure from the Windows-standard pointer path. Default ON;
+    // reviewers who do not want pressure-varied line width can turn it off.
+    [JsonPropertyName("input.pressure")] public bool PressureEnabled { get; set; } = true;
 }
 
 public static class UiSettingsStore

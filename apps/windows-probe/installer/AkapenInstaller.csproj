@@ -4,6 +4,7 @@
     <AssemblyName>AkapenSetup</AssemblyName>
     <Product>Akapen Setup</Product>
     <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
@@ -14,5 +15,6 @@
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="Akapen.zip" />
+    <EmbeddedResource Include="EULA-ja.txt" />
   </ItemGroup>
 </Project>

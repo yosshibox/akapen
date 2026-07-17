@@ -107,6 +107,7 @@ internal static class Program
     private static bool s_draggingBrushFader;
     private static bool s_brushFaderFocused;
     private static KeymapPresetKind s_keymapPreset = KeymapPresetKind.Photoshop;
+    private static bool s_pressureEnabled = true;
     // Navigator (V1.1): cached thumbnail (top-down BGRA rows for GDI+) and the
     // click/drag-to-pan state.
     private static byte[]? s_navThumbBgra;
@@ -447,6 +448,7 @@ internal static class Program
         s_outputFolderName = SanitizeFolderName(settings.OutputFolderName);
         s_customOutputPath = settings.CustomOutputPath ?? "";
         s_keymapPreset = UiSettingsStore.ParseKeymapPreset(settings.KeymapPreset);
+        s_pressureEnabled = settings.PressureEnabled;
         // 1. Resolve save target. Images save beside the source in _review;
         //    blank canvases use a temp folder unless the caller specifies one.
         s_imagePath = imagePath ?? "";
@@ -672,14 +674,39 @@ internal static class Program
 
     // Registers the plain WS_OVERLAPPEDWINDOW class both modes share. Kept as
     // a helper so the two entry points don't diverge on class flags.
+    // The app icon embedded in Akapen.exe (csproj ApplicationIcon), used for
+    // the title bar / Alt-Tab / taskbar. Extracted once; leaked deliberately
+    // (lives as long as the process, like the window classes).
+    private static IntPtr s_appIconLarge = IntPtr.Zero;
+    private static IntPtr s_appIconSmall = IntPtr.Zero;
+    private static bool s_appIconLoaded;
+
+    private static void EnsureAppIcons()
+    {
+        if (s_appIconLoaded) return;
+        s_appIconLoaded = true;
+        string? exe = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(exe)) return;
+        var large = new IntPtr[1];
+        var small = new IntPtr[1];
+        if (ExtractIconEx(exe, 0, large, small, 1) > 0)
+        {
+            s_appIconLarge = large[0];
+            s_appIconSmall = small[0];
+        }
+    }
+
     private static bool RegisterProbeWindowClass(WndProcDelegate wndProc, IntPtr hInstance, string className)
     {
+        EnsureAppIcons();
         var wc = new WNDCLASSEX
         {
             cbSize = (uint)Marshal.SizeOf<WNDCLASSEX>(),
             style = 0,
             lpfnWndProc = Marshal.GetFunctionPointerForDelegate(wndProc),
             hInstance = hInstance,
+            hIcon = s_appIconLarge,
+            hIconSm = s_appIconSmall,
             // A null class cursor leaves whatever cursor Windows displayed
             // while launching the process in place.  In product mode that was
             // the blue busy cursor, which made an otherwise responsive window
@@ -1127,7 +1154,8 @@ internal static class Program
         SettingsSiblingFolderId = 1012, SettingsSourceFolderId = 1013,
         SettingsCustomFolderId = 1014, SettingsFolderNameId = 1015,
         SettingsCustomPathId = 1016,
-        SettingsKeymapPhotoshopId = 1017, SettingsKeymapClipStudioId = 1018;
+        SettingsKeymapPhotoshopId = 1017, SettingsKeymapClipStudioId = 1018,
+        SettingsPressureId = 1019;
     private const int CW_USEDEFAULT = unchecked((int)0x80000000);
     private const int SW_HIDE = 0, SW_SHOWNORMAL = 1;
     private static readonly IntPtr IDC_ARROW = (IntPtr)32512;
@@ -1841,6 +1869,13 @@ internal static class Program
 
     private const int ProductMenuBaseId = 0x5000;
     private const int ProductOpenFolderId = 0x5100;
+    // V1.1.1: explicit pressure submenu (the old single "筆圧" item silently
+    // cycled Normal→Soft→Hard with no visible state) and Help → About.
+    private const int ProductPressureEnabledId = 0x5201;
+    private const int ProductPressureNormalId = 0x5202;
+    private const int ProductPressureSoftId = 0x5203;
+    private const int ProductPressureHardId = 0x5204;
+    private const int ProductAboutId = 0x5210;
 
     private static IntPtr CreateProductMenu()
     {
@@ -1875,13 +1910,23 @@ internal static class Program
         AppendMenu(tools, MF_SEPARATOR, UIntPtr.Zero, null);
         AppendMenu(tools, MF_STRING, MenuId(UiCommandId.BrushSize), "ブラシサイズ");
         AppendMenu(tools, MF_STRING, MenuId(UiCommandId.Color), "色");
-        AppendMenu(tools, MF_STRING, MenuId(UiCommandId.Pressure), "筆圧");
+        IntPtr pressure = CreatePopupMenu();
+        AppendMenu(pressure, MF_STRING, (UIntPtr)ProductPressureEnabledId, "筆圧を使う");
+        AppendMenu(pressure, MF_SEPARATOR, UIntPtr.Zero, null);
+        AppendMenu(pressure, MF_STRING, (UIntPtr)ProductPressureNormalId, "筆圧カーブ: 標準");
+        AppendMenu(pressure, MF_STRING, (UIntPtr)ProductPressureSoftId, "筆圧カーブ: やわらかめ");
+        AppendMenu(pressure, MF_STRING, (UIntPtr)ProductPressureHardId, "筆圧カーブ: かため");
+        AppendMenu(tools, MF_POPUP, (UIntPtr)pressure, "筆圧");
         AppendMenu(tools, MF_STRING, MenuId(UiCommandId.Opacity), "不透明度");
         AppendMenu(menu, MF_POPUP, (UIntPtr)tools, "ツール");
 
         IntPtr settings = CreatePopupMenu();
         AppendMenu(settings, MF_STRING, MenuId(UiCommandId.Settings), "設定");
         AppendMenu(menu, MF_POPUP, (UIntPtr)settings, "設定");
+
+        IntPtr help = CreatePopupMenu();
+        AppendMenu(help, MF_STRING, (UIntPtr)ProductAboutId, "バージョン情報");
+        AppendMenu(menu, MF_POPUP, (UIntPtr)help, "ヘルプ");
         return menu;
     }
 
@@ -1903,7 +1948,7 @@ internal static class Program
             (tools, UiCommandId.Pen), (tools, UiCommandId.Eraser),
             (tools, UiCommandId.Pan), (tools, UiCommandId.Zoom),
             (tools, UiCommandId.Rotate), (tools, UiCommandId.BrushSize),
-            (tools, UiCommandId.Color), (tools, UiCommandId.Pressure),
+            (tools, UiCommandId.Color),
             (tools, UiCommandId.Opacity), (settings, UiCommandId.Settings)
         })
         {
@@ -1911,10 +1956,53 @@ internal static class Program
             EnableMenuItem(menu, (uint)MenuId(command), state.IsDisabled ? MF_GRAYED : MF_ENABLED);
         }
 
+        // Pressure submenu state (V1.1.1): check mark on the on/off toggle,
+        // radio mark on the active curve; curve entries gray out while
+        // pressure is off.
+        CheckMenuItem(tools, ProductPressureEnabledId,
+            MF_BYCOMMAND | (s_pressureEnabled ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuRadioItem(tools, ProductPressureNormalId, ProductPressureHardId,
+            (uint)(s_pressureCurve switch
+            {
+                PressureCurve.Soft => ProductPressureSoftId,
+                PressureCurve.Hard => ProductPressureHardId,
+                _ => ProductPressureNormalId,
+            }), MF_BYCOMMAND);
+        foreach (int id in new[] { ProductPressureNormalId, ProductPressureSoftId, ProductPressureHardId })
+            EnableMenuItem(tools, (uint)id, s_pressureEnabled ? MF_ENABLED : MF_GRAYED);
+
         var activeTool = CurrentUiState().ActiveTool;
         CheckMenuRadioItem(tools, (uint)MenuId(UiCommandId.Pen), (uint)MenuId(UiCommandId.Rotate),
             (uint)MenuId(activeTool), MF_BYCOMMAND);
         DrawMenuBar(hWnd);
+    }
+
+    /// <summary>Writes the current in-memory settings to settings.json (used
+    /// by the settings dialog's OK and the menu-level pressure toggle).</summary>
+    private static void PersistSettings()
+    {
+        UiSettingsStore.Save(s_settingsPath, new UiSettings
+        {
+            DockSide = s_dockSide == DockSide.Left ? "left" : "right",
+            CanvasBackdrop = s_canvasBackdrop == CanvasBackdrop.Black ? "black" : "white",
+            AutoSaveOnNavigate = s_autoSaveOnNavigate,
+            SaveLocationMode = s_saveLocationMode switch
+            {
+                SaveLocationMode.SourceFolder => "sourceFolder",
+                SaveLocationMode.CustomFolder => "customFolder",
+                _ => "siblingSubfolder",
+            },
+            OutputFolderName = s_outputFolderName,
+            CustomOutputPath = s_customOutputPath,
+            KeymapPreset = UiSettingsStore.KeymapPresetName(s_keymapPreset),
+            PressureEnabled = s_pressureEnabled,
+        });
+    }
+
+    private static string AboutText()
+    {
+        Version v = typeof(Program).Assembly.GetName().Version ?? new Version(1, 1, 1);
+        return $"Akapen Version {v.Major}.{v.Minor}.{v.Build} Windows\n(C) 2026 Yoshino Yoshikawa";
     }
 
     private static UIntPtr MenuId(UiCommandId command) => (UIntPtr)(ProductMenuBaseId + (int)command);
@@ -2038,7 +2126,7 @@ internal static class Program
         int x = ownerRect.left + 80, y = ownerRect.top + 80;
         float scale = UiScale(owner);
         s_settingsDialog = CreateWindowEx(WS_EX_DLGMODALFRAME, "AkapenSettingsWndClass", "Akapen 設定",
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE, x, y, (int)(600 * scale), (int)(596 * scale),
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE, x, y, (int)(600 * scale), (int)(672 * scale),
             owner, IntPtr.Zero, hInstance, IntPtr.Zero);
         if (s_settingsDialog == IntPtr.Zero) { EnableWindow(owner, true); s_settingsOwner = IntPtr.Zero; return; }
         MSG msg = default;
@@ -2076,24 +2164,30 @@ internal static class Program
                 Note(hWnd, "P=ペン、Ctrl+Y=やり直し、- / ^=回転（15°）", L + 24, 120);
                 Separator(hWnd, L, 150, W);
 
-                Header(hWnd, "キャンバス", L, 162);
-                CreateSettingsControl(hWnd, "BUTTON", "画像の範囲外を黒にする", BS_AUTOCHECKBOX | WS_TABSTOP, L + 4, 190, IndentW, 24, SettingsDarkCanvasId);
-                Separator(hWnd, L, 226, W);
+                Header(hWnd, "ペン", L, 162);
+                CreateSettingsControl(hWnd, "BUTTON", "筆圧を使う（線の太さに反映する）", BS_AUTOCHECKBOX | WS_TABSTOP, L + 4, 190, IndentW, 24, SettingsPressureId);
+                Note(hWnd, "オフのときは筆圧を無視し、一定の太さで描きます", L + 24, 214);
+                Separator(hWnd, L, 240, W);
 
-                Header(hWnd, "画像切り替え", L, 238);
-                CreateSettingsControl(hWnd, "BUTTON", "左右矢印キーで切り替える前に自動保存する", BS_AUTOCHECKBOX | WS_TABSTOP, L + 4, 266, IndentW, 24, SettingsAutoSaveId);
-                Separator(hWnd, L, 302, W);
+                Header(hWnd, "キャンバス", L, 252);
+                CreateSettingsControl(hWnd, "BUTTON", "画像の範囲外を黒にする", BS_AUTOCHECKBOX | WS_TABSTOP, L + 4, 280, IndentW, 24, SettingsDarkCanvasId);
+                Separator(hWnd, L, 316, W);
 
-                Header(hWnd, "保存先", L, 314);
-                CreateSettingsControl(hWnd, "BUTTON", "画像と同じ階層に新規フォルダを作る", BS_AUTORADIOBUTTON | BS_GROUP | WS_TABSTOP, L + 4, 342, IndentW, 24, SettingsSiblingFolderId);
-                CreateSettingsControl(hWnd, "STATIC", "フォルダ名", 0, L + 28, 372, 82, 22, 0);
-                CreateSettingsControl(hWnd, "EDIT", s_outputFolderName, WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, L + 116, 370, 384, 26, SettingsFolderNameId);
-                CreateSettingsControl(hWnd, "BUTTON", "画像と同じフォルダに保存する", BS_AUTORADIOBUTTON | WS_TABSTOP, L + 4, 404, IndentW, 24, SettingsSourceFolderId);
-                CreateSettingsControl(hWnd, "BUTTON", "指定フォルダに保存する", BS_AUTORADIOBUTTON | WS_TABSTOP, L + 4, 434, IndentW, 24, SettingsCustomFolderId);
-                CreateSettingsControl(hWnd, "EDIT", s_customOutputPath, WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, L + 28, 462, 472, 26, SettingsCustomPathId);
+                Header(hWnd, "画像切り替え", L, 328);
+                CreateSettingsControl(hWnd, "BUTTON", "左右矢印キーで切り替える前に自動保存する", BS_AUTOCHECKBOX | WS_TABSTOP, L + 4, 356, IndentW, 24, SettingsAutoSaveId);
+                Separator(hWnd, L, 392, W);
 
-                CreateSettingsControl(hWnd, "BUTTON", "OK", BS_DEFPUSHBUTTON | WS_TABSTOP, 366, 512, 92, 32, SettingsOkId);
-                CreateSettingsControl(hWnd, "BUTTON", "キャンセル", WS_TABSTOP, 466, 512, 92, 32, SettingsCancelId);
+                Header(hWnd, "保存先", L, 404);
+                CreateSettingsControl(hWnd, "BUTTON", "画像と同じ階層に新規フォルダを作る", BS_AUTORADIOBUTTON | BS_GROUP | WS_TABSTOP, L + 4, 432, IndentW, 24, SettingsSiblingFolderId);
+                CreateSettingsControl(hWnd, "STATIC", "フォルダ名", 0, L + 28, 462, 82, 22, 0);
+                CreateSettingsControl(hWnd, "EDIT", s_outputFolderName, WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, L + 116, 460, 384, 26, SettingsFolderNameId);
+                CreateSettingsControl(hWnd, "BUTTON", "画像と同じフォルダに保存する", BS_AUTORADIOBUTTON | WS_TABSTOP, L + 4, 494, IndentW, 24, SettingsSourceFolderId);
+                CreateSettingsControl(hWnd, "BUTTON", "指定フォルダに保存する", BS_AUTORADIOBUTTON | WS_TABSTOP, L + 4, 524, IndentW, 24, SettingsCustomFolderId);
+                CreateSettingsControl(hWnd, "EDIT", s_customOutputPath, WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, L + 28, 552, 472, 26, SettingsCustomPathId);
+
+                CreateSettingsControl(hWnd, "BUTTON", "OK", BS_DEFPUSHBUTTON | WS_TABSTOP, 366, 594, 92, 32, SettingsOkId);
+                CreateSettingsControl(hWnd, "BUTTON", "キャンセル", WS_TABSTOP, 466, 594, 92, 32, SettingsCancelId);
+                SetButtonChecked(hWnd, SettingsPressureId, s_pressureEnabled);
 
                 CheckRadioButton(hWnd, SettingsKeymapPhotoshopId, SettingsKeymapClipStudioId,
                     s_keymapPreset == KeymapPresetKind.ClipStudio ? SettingsKeymapClipStudioId : SettingsKeymapPhotoshopId);
@@ -2126,6 +2220,7 @@ internal static class Program
                     case SettingsOkId:
                         s_keymapPreset = IsButtonChecked(hWnd, SettingsKeymapClipStudioId)
                             ? KeymapPresetKind.ClipStudio : KeymapPresetKind.Photoshop;
+                        s_pressureEnabled = IsButtonChecked(hWnd, SettingsPressureId);
                         s_canvasBackdrop = IsButtonChecked(hWnd, SettingsDarkCanvasId) ? CanvasBackdrop.Black : CanvasBackdrop.White;
                         s_autoSaveOnNavigate = IsButtonChecked(hWnd, SettingsAutoSaveId);
                         s_saveLocationMode = IsButtonChecked(hWnd, SettingsSourceFolderId) ? SaveLocationMode.SourceFolder
@@ -2133,26 +2228,13 @@ internal static class Program
                             : SaveLocationMode.SiblingSubfolder;
                         s_outputFolderName = SanitizeFolderName(ReadControlText(hWnd, SettingsFolderNameId));
                         s_customOutputPath = ReadControlText(hWnd, SettingsCustomPathId).Trim();
-                        UiSettingsStore.Save(s_settingsPath, new UiSettings
-                        {
-                            DockSide = s_dockSide == DockSide.Left ? "left" : "right",
-                            CanvasBackdrop = s_canvasBackdrop == CanvasBackdrop.Black ? "black" : "white",
-                            AutoSaveOnNavigate = s_autoSaveOnNavigate,
-                            SaveLocationMode = s_saveLocationMode switch
-                            {
-                                SaveLocationMode.SourceFolder => "sourceFolder",
-                                SaveLocationMode.CustomFolder => "customFolder",
-                                _ => "siblingSubfolder",
-                            },
-                            OutputFolderName = s_outputFolderName,
-                            CustomOutputPath = s_customOutputPath,
-                            KeymapPreset = UiSettingsStore.KeymapPresetName(s_keymapPreset),
-                        });
+                        PersistSettings();
                         if (!string.IsNullOrEmpty(s_imagePath))
                             SetOutputDirectory(s_customOutDir ?? ResolveOutputDirectory(s_imagePath));
                         if (s_engine != IntPtr.Zero)
                             akapen_set_canvas_dark(s_engine, s_canvasBackdrop == CanvasBackdrop.Black ? 1 : 0);
                         RenderCurrentFrame();
+                        UpdateProductMenu(s_settingsOwner);
                         CloseSettingsDialog(hWnd);
                         return IntPtr.Zero;
                     case SettingsCancelId: CloseSettingsDialog(hWnd); return IntPtr.Zero;
@@ -2260,6 +2342,34 @@ internal static class Program
                     OpenImageFolderDialog(hWnd);
                     return IntPtr.Zero;
                 }
+                if (s_productMode)
+                {
+                    switch ((int)(wParam.ToInt64() & 0xFFFF))
+                    {
+                        case ProductPressureEnabledId:
+                            s_pressureEnabled = !s_pressureEnabled;
+                            PersistSettings();
+                            Console.WriteLine($"{LogPrefix} pressure {(s_pressureEnabled ? "enabled" : "disabled (fixed width)")}");
+                            UpdateProductMenu(hWnd);
+                            return IntPtr.Zero;
+                        case ProductPressureNormalId:
+                        case ProductPressureSoftId:
+                        case ProductPressureHardId:
+                            s_pressureCurve = (int)(wParam.ToInt64() & 0xFFFF) switch
+                            {
+                                ProductPressureSoftId => PressureCurve.Soft,
+                                ProductPressureHardId => PressureCurve.Hard,
+                                _ => PressureCurve.Normal,
+                            };
+                            ApplyStyle(s_engine);
+                            Console.WriteLine($"{LogPrefix} pressure curve={s_pressureCurve}");
+                            UpdateProductMenu(hWnd);
+                            return IntPtr.Zero;
+                        case ProductAboutId:
+                            MessageBox(hWnd, AboutText(), "Akapen について", 0x40 /*MB_ICONINFORMATION*/);
+                            return IntPtr.Zero;
+                    }
+                }
                 if (s_productMode && TryGetMenuCommand(wParam, out UiCommandId menuCommand))
                 {
                     HandleDockCommand(hWnd, menuCommand);
@@ -2285,11 +2395,14 @@ internal static class Program
                 {
                     s_lastPenInputUtc = DateTime.UtcNow;
                     GetPointerPenInfo(id, out POINTER_PEN_INFO pen);
-                    double pressure = pen.pressure / 1024.0;
+                    // V1.1.1: pressure comes from the Windows-standard pointer
+                    // path and is ON by default; the settings toggle flattens
+                    // it to a fixed 1.0 (constant line width) when off.
+                    double pressure = s_pressureEnabled ? pen.pressure / 1024.0 : 1.0;
                     int phase = msg == WM_POINTERDOWN ? 0 : (msg == WM_POINTERUP ? 2 : 1);
                     if (phase == 0) s_activePenPointers.Add(id);
                     FeedPointer(hWnd, pt.x, pt.y, pressure, 0, phase);
-                    if (phase == 2 && s_engine != IntPtr.Zero && akapen_pressure_stuck(s_engine) != 0)
+                    if (phase == 2 && s_pressureEnabled && s_engine != IntPtr.Zero && akapen_pressure_stuck(s_engine) != 0)
                         Console.WriteLine($"{LogPrefix} WARN: pen pressure was unavailable or constant; using the reported fallback pressure");
                     if (phase == 2) s_activePenPointers.Remove(id);
                 }
@@ -2635,7 +2748,11 @@ internal static class Program
     [DllImport("user32.dll")]
     private static extern void PostQuitMessage(int nExitCode);
 
-    [DllImport("user32.dll")]
+    // Explicitly the W export: the default ANSI resolution (DefWindowProcA)
+    // reinterprets the UTF-16 caption set by CreateWindowExW / SetWindowTextW
+    // as ANSI, truncating the title at the first interleaved NUL byte — the
+    // V1.1 title bar showed just "A" instead of "Akapen".
+    [DllImport("user32.dll", EntryPoint = "DefWindowProcW")]
     private static extern IntPtr DefWindowProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll")]
@@ -2671,10 +2788,10 @@ internal static class Program
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", EntryPoint = "GetMessageW")]
     private static extern int GetMessage(out MSG msg, IntPtr hWnd, uint min, uint max);
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", EntryPoint = "PeekMessageW")]
     private static extern bool PeekMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
 
     [DllImport("user32.dll")]
@@ -2683,7 +2800,7 @@ internal static class Program
     [DllImport("user32.dll")]
     private static extern bool TranslateMessage(ref MSG lpMsg);
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", EntryPoint = "DispatchMessageW")]
     private static extern IntPtr DispatchMessage(ref MSG lpMsg);
 
     [DllImport("user32.dll")]
@@ -2722,6 +2839,9 @@ internal static class Program
     [DllImport("shell32.dll")]
     private static extern void DragFinish(IntPtr drop);
 
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint ExtractIconEx(string file, int iconIndex, IntPtr[] largeIcons, IntPtr[] smallIcons, uint count);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int MessageBox(IntPtr hWnd, string text, string caption, uint type);
 
@@ -2742,4 +2862,8 @@ internal static class Program
 
     private const uint MF_STRING = 0x0000, MF_SEPARATOR = 0x0800, MF_POPUP = 0x0010;
     private const uint MF_BYCOMMAND = 0x0000, MF_ENABLED = 0x0000, MF_GRAYED = 0x0001;
+    private const uint MF_CHECKED = 0x0008, MF_UNCHECKED = 0x0000;
+
+    [DllImport("user32.dll")]
+    private static extern uint CheckMenuItem(IntPtr hMenu, uint idCheckItem, uint uCheck);
 }

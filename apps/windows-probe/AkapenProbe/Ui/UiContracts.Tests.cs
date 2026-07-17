@@ -147,6 +147,7 @@ internal static class UiContractTests
             Assert(UiSettingsStore.ParseKeymapPreset("clipstudio") == KeymapPresetKind.ClipStudio, "CLIP STUDIO preset is selectable");
             Assert(UiSettingsStore.ParseKeymapPreset("garbage") == KeymapPresetKind.Photoshop, "unknown keymap values fall back to the default preset");
             Assert((int)KeymapPresetKind.ClipStudio == 0 && (int)KeymapPresetKind.Photoshop == 1, "preset codes match the AKAPEN_KEYMAP_* C ABI values");
+            Assert(defaults.PressureEnabled, "pen pressure defaults ON (V1.1.1)");
             Assert(UiSettingsStore.ParseBackdrop(defaults.CanvasBackdrop) == CanvasBackdrop.White, "canvas outside-image backdrop defaults to white");
             Assert(defaults.AutoSaveOnNavigate, "frame navigation auto-save defaults on");
             Assert(UiSettingsStore.ParseSaveLocation(defaults.SaveLocationMode) == SaveLocationMode.SiblingSubfolder, "save target defaults to a sibling subfolder");
@@ -157,8 +158,10 @@ internal static class UiContractTests
                 SaveLocationMode = "customFolder", OutputFolderName = "checked",
                 CustomOutputPath = @"C:\review-output",
                 KeymapPreset = "clipstudio",
+                PressureEnabled = false,
             });
             UiSettings roundTrip = UiSettingsStore.Load(path);
+            Assert(!roundTrip.PressureEnabled, "pressure toggle round-trips");
             Assert(UiSettingsStore.ParseKeymapPreset(roundTrip.KeymapPreset) == KeymapPresetKind.ClipStudio, "keymap preset round-trips");
             Assert(UiSettingsStore.ParseBackdrop(roundTrip.CanvasBackdrop) == CanvasBackdrop.Black, "black backdrop round-trips");
             Assert(!roundTrip.AutoSaveOnNavigate, "disabled navigation auto-save round-trips");

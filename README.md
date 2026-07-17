@@ -9,10 +9,13 @@ flow to the next frame.
 提出された作画に赤で指示を描き込み、元画像を壊さず別名保存し、連番の次カットへ
 流れるように移動する。CLIP STUDIO PAINT の手癖がそのまま通じることを重視する。
 
-> **Status (2026-07-13): Windows版完成。** Windows版をAkapenの現行製品仕様・
-> Mac移植時のUX正本として凍結した。Macへの反映は別工程とし、現時点では着手しない。
-> 配布用の自己完結型インストーラーは `dist/AkapenSetup-win-x64.exe`。
+> **Status (2026-07-17): Windows V1.1.1。** Photoshop準拠キーマップ(既定)、
+> ナビゲーター、15度回転、筆圧トグル、EULA付きインストーラを搭載。
+> UX正本は `docs/windows-v1.1-and-mac-port-baseline-2026-07-17.md`。
+> 配布用インストーラは GitHub Releases および `dist/`。
 > 本リポジトリはprivate運用を継続する。
+
+**📖 ユーザーマニュアル: [docs/manual/akapen-manual-ja.md](docs/manual/akapen-manual-ja.md)**
 
 ## Scope / スコープ
 
