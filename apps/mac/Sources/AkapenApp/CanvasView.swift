@@ -79,8 +79,21 @@ final class CanvasNSView: NSView {
     override var isFlipped: Bool { true } // top-left origin, matches image space
     override var acceptsFirstResponder: Bool { true }
 
+    // Focus-independent key dispatch (spec §3 「モードスコープのキー
+    // ディスパッチ(フォーカス非依存)」): a local monitor sees key events for
+    // this window regardless of which control currently has focus, so
+    // shortcuts work right after launch/open without clicking the canvas
+    // first (V1.2 fix — the responder-chain-only path silently dropped every
+    // key until the canvas had focus). Text fields / IME are still respected
+    // via resolveAction's guards; the brush fader keeps its arrow keys by
+    // being checked as first responder before dispatch.
+    private var keyMonitor: Any?
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        // 回転時に描画がステータスバーへはみ出さないよう明示クリップ
+        // (macOS 14 以降 clipsToBounds の既定が false)。
+        clipsToBounds = true
         window?.acceptsMouseMovedEvents = true
         // Receive *direct* touches (finger/palm on a touch display) so palm
         // rejection can classify and reject them (spec §5.2). Indirect
@@ -88,11 +101,53 @@ final class CanvasNSView: NSView {
         allowedTouchTypes = [.direct]
         if window == nil {
             teardownGPU()
+            if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+            keyMonitor = nil
         } else {
             ensureGPU()
             renderGPU()
+            if keyMonitor == nil {
+                keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) {
+                    [weak self] event in
+                    guard let self, event.window === self.window else { return event }
+                    return self.handleMonitoredKey(event) ? nil : event
+                }
+            }
         }
     }
+
+    /// Returns true when the event was consumed. Mirrors keyDown/keyUp but
+    /// runs before the responder chain (focus-independent).
+    private func handleMonitoredKey(_ event: NSEvent) -> Bool {
+        // Let focused text inputs and the brush fader keep their keys.
+        if let responder = window?.firstResponder,
+           responder is NSText || responder is NSTextView {
+            return false
+        }
+        if let responder = window?.firstResponder as? NSView,
+           responder !== self, responder.acceptsFirstResponder,
+           !(responder is CanvasNSView) {
+            // e.g. the brush fader (arrow keys adjust the size while focused).
+            return false
+        }
+        if event.type == .keyUp {
+            if event.charactersIgnoringModifiers == " " { spaceDown = false }
+            return false
+        }
+        // Plain Space = momentary pan hold (not a discrete action).
+        if event.charactersIgnoringModifiers == " ",
+           !event.modifierFlags.contains(.command),
+           !event.modifierFlags.contains(.option) {
+            spaceDown = true
+            return true
+        }
+        if let action = resolveAction(for: event), dispatch(action) {
+            return true
+        }
+        return false
+    }
+
+    private var sizedWindowOnce = false
 
     func refresh() {
         guard let state else { return }
@@ -102,6 +157,7 @@ final class CanvasNSView: NSView {
         if let e = state.engine {
             let (w, h) = e.size
             imageSize = CGSize(width: w, height: h)
+            sizeWindowToImageIfNeeded()
         } else {
             imageSize = nil
         }
@@ -117,6 +173,26 @@ final class CanvasNSView: NSView {
             fitIfNeeded()
             needsDisplay = true
         }
+    }
+
+    /// 最初の画像を開いたとき、ウィンドウを画像に合わせた作業サイズにする
+    /// (Windows 起動時の「画像原寸ベースのクライアントサイズ」の写像。画面の
+    /// 85% を上限にフィット)。以後のリサイズはユーザーの意思を尊重する。
+    private func sizeWindowToImageIfNeeded() {
+        guard !sizedWindowOnce, let window, let sz = imageSize,
+              let screen = window.screen ?? NSScreen.main else { return }
+        sizedWindowOnce = true
+        let avail = screen.visibleFrame
+        let dockW = CGFloat(AkapenUIMetrics.dockWidth) + 1
+        let statusH = CGFloat(AkapenUIMetrics.statusHeight) + 1
+        let maxCanvasW = avail.width * 0.85 - dockW
+        let maxCanvasH = avail.height * 0.85 - statusH
+        let scale = min(1, min(maxCanvasW / sz.width, maxCanvasH / sz.height))
+        let content = NSSize(
+            width: max(720, sz.width * scale + dockW),
+            height: max(480, sz.height * scale + statusH))
+        window.setContentSize(content)
+        window.center()
     }
 
     private func fitIfNeeded() {
@@ -222,6 +298,14 @@ final class CanvasNSView: NSView {
         super.setFrameSize(newSize)
         ensureGPU()
         updateGPUSurfaceSizeIfNeeded()
+        // Windows 正本(ResizeContract.RefitsImageOnEveryWindowResize):
+        // ウィンドウのサイズ変更中も画像を連続的にフィットさせる。
+        if imageSize != nil {
+            fittedOnce = false
+            fitIfNeeded()
+            needsDisplay = true
+            renderGPU()
+        }
     }
 
     override func viewDidChangeBackingProperties() {
@@ -305,6 +389,8 @@ final class CanvasNSView: NSView {
 
     private func send(_ event: NSEvent, phase: AkapenPhase) {
         guard let state, state.engine != nil else { return }
+        if state.arrowMode { return } // 矢印ツール(操作なし): 描画に流さない
+
         let (p, kind) = classify(event)
         // Palm rejection (spec §5.2): consult the core gate before drawing. Pen
         // and mouse always resolve to `.draw`; the pen's down/move/up here is
@@ -548,11 +634,15 @@ final class CanvasNSView: NSView {
         guard let state, state.engine != nil else { return false }
         switch action {
         case Int32(AKAPEN_ACT_TOOL_PEN):
+            state.arrowMode = false
             state.tool = .pen
             state.applyToolState()
         case Int32(AKAPEN_ACT_TOOL_ERASER):
+            state.arrowMode = false
             state.tool = .eraser
             state.applyToolState()
+        case Int32(AKAPEN_ACT_TOOL_ARROW):
+            state.arrowMode = true
         case Int32(AKAPEN_ACT_UNDO):
             state.undo()
         case Int32(AKAPEN_ACT_REDO):

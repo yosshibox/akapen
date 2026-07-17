@@ -38,6 +38,9 @@ final class AppState: ObservableObject {
     @Published var currentURL: URL?
     @Published var siblings: [URL] = []
     @Published var tool: AkapenTool = .pen
+    /// V1.2 (Windows V1.1 parity): 矢印ツール(操作なし)。true の間はポインタ
+    /// 入力を描画に流さない。シェル専用状態で、コアの Tool とは独立。
+    @Published var arrowMode = false
     @Published var brushSize: Double = 14
     @Published var color: Color = AkapenPalette.defaultColor.color
     /// 右側パレットで選択中のスウォッチ(ハイライト表示用)。ColorPicker などで

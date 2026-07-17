@@ -23,7 +23,7 @@ final class AkapenUIContractTests: XCTestCase {
     func testLoadedDockIsLightweightAndContainsNoDocumentOrZoomButtons() {
         XCTAssertEqual(AkapenUIMetrics.toolDockHeight, 96)
         XCTAssertEqual(AkapenUIMetrics.statusHeight, 24)
-        XCTAssertEqual(LoadedDockContract.permanentCommands, ["tool.pen", "tool.eraser"])
+        XCTAssertEqual(LoadedDockContract.permanentCommands, ["tool.arrow", "tool.pen", "tool.eraser"], "V1.2: 矢印・ペン・消しゴムの3ボタン(Windows V1.1 parity)")
     }
 
     func testPaletteIsTenCircularSwatchesInTwoColumns() {
@@ -36,18 +36,29 @@ final class AkapenUIContractTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(PaletteContract.minimumDiameter, 14)
     }
 
-    func testCompactSizeKnobKeepsRangePointerAndKeyboardBehavior() {
-        let bounds = ContractRect(x: 0, y: 0, width: 48, height: 72)
-        XCTAssertLessThanOrEqual(AkapenUIMetrics.sizeControlWidth, 52)
-        XCTAssertLessThanOrEqual(AkapenUIMetrics.sizeControlHeight, 76)
-        XCTAssertEqual(BrushSizeKnob.value(atY: bounds.y, in: bounds), 50)
-        XCTAssertEqual(BrushSizeKnob.value(atY: bounds.bottom - 1, in: bounds), 1)
+    func testBrushFaderMatchesWindowsFanContract() {
+        // V1.2: the Windows BrushFader — a tall symmetric fan with a circular
+        // preview above the rail and a live px readout below it.
+        XCTAssertEqual(AkapenUIMetrics.sizeControlWidth, 88)
+        XCTAssertGreaterThanOrEqual(AkapenUIMetrics.sizeControlHeight, 200)
+        XCTAssertFalse(BrushSizeKnob.hasDownwardTriangleCap)
+        XCTAssertTrue(BrushSizeKnob.hasLargeRail)
+        XCTAssertFalse(BrushSizeKnob.hasKnob)
+        XCTAssertFalse(BrushSizeKnob.hasTickMarks)
+        XCTAssertTrue(BrushSizeKnob.usesSymmetricFanFill)
+
+        let control = ContractRect(x: 0, y: 0, width: 88, height: 220)
+        let rail = BrushSizeKnob.trackBounds(in: control)
+        XCTAssertEqual(rail.y, 70, "preview circle sits above the rail")
+        XCTAssertEqual(rail.bottom, 220 - 32, "px readout sits below the rail")
+        XCTAssertEqual(BrushSizeKnob.value(atY: rail.y, in: rail), 50, "rail top = max size")
+        XCTAssertEqual(BrushSizeKnob.value(atY: rail.bottom - 1, in: rail), 1, "rail bottom = min size")
+        XCTAssertEqual(BrushSizeKnob.y(forValue: 50, in: rail), rail.y)
+        XCTAssertEqual(BrushSizeKnob.y(forValue: 1, in: rail), rail.bottom - 1)
         XCTAssertEqual(BrushSizeKnob.adjust(10, key: .up), 11)
         XCTAssertEqual(BrushSizeKnob.adjust(10, key: .pageDown), 5)
         XCTAssertEqual(BrushSizeKnob.adjust(10, key: .home), 1)
         XCTAssertEqual(BrushSizeKnob.adjust(10, key: .end), 50)
-        XCTAssertTrue(BrushSizeKnob.hasDownwardTriangleCap)
-        XCTAssertFalse(BrushSizeKnob.hasLargeRail)
     }
 
     func testMacStateReplacementHasNoImplicitTransitionAnimation() {

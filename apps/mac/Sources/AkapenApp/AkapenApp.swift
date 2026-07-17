@@ -17,19 +17,15 @@ struct AkapenApp: App {
     @StateObject private var state = AppState()
     @AppStorage(AkapenSettingsKey.pressureEnabled) private var pressureEnabled = true
 
-    init() {
-        // Dev runs (`swift run AkapenApp`) have no bundle icon; the .app
-        // bundle (M-mac5) carries the same artwork as an .icns.
-        if let url = Bundle.module.url(forResource: "akapen-icon", withExtension: "png"),
-           let icon = NSImage(contentsOf: url) {
-            NSApplication.shared.applicationIconImage = icon
-        }
-    }
-
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(state)
+                // Dock icon for dev runs (`swift run` has no bundle .icns).
+                // Deliberately NOT in App.init(): touching NSApplication.shared
+                // before SwiftUI finishes app bootstrap prevents the WindowGroup
+                // window from ever being created (found by bisection, V1.2).
+                .onAppear { Self.applyDockIcon() }
         }
         .commands {
             CommandGroup(replacing: .appInfo) {
@@ -130,6 +126,14 @@ struct AkapenApp: App {
         } else if let url = URL(string: "https://github.com/yosshibox/akapen/blob/main/docs/manual/akapen-manual-ja.md") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    private static func applyDockIcon() {
+        guard NSApplication.shared.applicationIconImage?.name() != "akapen-icon",
+              let url = Bundle.module.url(forResource: "akapen-icon", withExtension: "png"),
+              let icon = NSImage(contentsOf: url) else { return }
+        icon.setName("akapen-icon")
+        NSApplication.shared.applicationIconImage = icon
     }
 
     private func showAbout() {

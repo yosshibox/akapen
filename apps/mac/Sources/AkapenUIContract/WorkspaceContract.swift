@@ -21,8 +21,11 @@ public struct WorkspacePresentation: Equatable {
 public enum AkapenUIMetrics {
     public static let toolDockHeight = 96
     public static let statusHeight = 24
-    public static let sizeControlWidth = 48
-    public static let sizeControlHeight = 72
+    // V1.2: the Windows V1.0/V1.1 baseline brush fader (spec: 縦長の左右対称
+    // 扇形フェーダー+円形プレビュー+px 数値の即時同期). Mirrors the Windows
+    // DockLayout.SizeControlWidth/Height (88 × flexible, canonical 248).
+    public static let sizeControlWidth = 88
+    public static let sizeControlHeight = 220
     /// V1.2 (Windows V1.1 の写像): the right dock width shared with the
     /// Windows shell's DockLayout.Width (168 DIP).
     public static let dockWidth = 168
@@ -30,7 +33,8 @@ public enum AkapenUIMetrics {
 }
 
 public enum LoadedDockContract {
-    public static let permanentCommands = ["tool.pen", "tool.eraser"]
+    /// V1.2 (Windows V1.1 parity): 矢印(操作なし)・ペン・消しゴム.
+    public static let permanentCommands = ["tool.arrow", "tool.pen", "tool.eraser"]
 }
 
 public enum SwatchShape {
@@ -70,17 +74,40 @@ public enum BrushSizeKey {
 public enum BrushSizeKnob {
     public static let minimum = 1.0
     public static let maximum = 50.0
-    public static let hasDownwardTriangleCap = true
-    public static let hasLargeRail = false
+    // V1.2: the Windows BrushFader contract — a symmetric fan fill on a large
+    // rail with a circular preview and live px readout; no triangle cap, no
+    // knob, no tick marks.
+    public static let hasDownwardTriangleCap = false
+    public static let hasLargeRail = true
+    public static let hasKnob = false
+    public static let hasTickMarks = false
+    public static let usesSymmetricFanFill = true
+    /// Rail insets inside the control (Windows BrushFader.TrackBounds):
+    /// the circular preview lives above the rail, the px readout below it.
+    public static let trackInsetTop = 70
+    public static let trackInsetBottom = 32
 
     public static func clamp(_ value: Double) -> Double {
         value.isFinite ? min(maximum, max(minimum, value)) : minimum
+    }
+
+    /// The clickable rail inside the whole control (Windows TrackBounds).
+    public static func trackBounds(in control: ContractRect) -> ContractRect {
+        ContractRect(
+            x: control.x, y: control.y + trackInsetTop, width: control.width,
+            height: max(1, control.height - trackInsetTop - trackInsetBottom))
     }
 
     public static func value(atY y: Int, in bounds: ContractRect) -> Double {
         guard bounds.height > 1 else { return minimum }
         let ratio = min(1, max(0, Double(y - bounds.y) / Double(bounds.height - 1)))
         return (maximum - ratio * (maximum - minimum)).rounded()
+    }
+
+    /// Inverse of `value(atY:in:)` for drawing the fill.
+    public static func y(forValue value: Double, in bounds: ContractRect) -> Int {
+        let ratio = (maximum - clamp(value)) / (maximum - minimum)
+        return bounds.y + Int((ratio * Double(max(0, bounds.height - 1))).rounded())
     }
 
     public static func adjust(_ value: Double, key: BrushSizeKey) -> Double {

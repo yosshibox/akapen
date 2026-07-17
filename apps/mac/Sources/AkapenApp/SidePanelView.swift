@@ -30,25 +30,39 @@ struct SidePanelView: View {
 
     private var toolGroup: some View {
         HStack(spacing: 6) {
-            tool(.pen, symbol: "pencil.tip", label: "ペン", shortcut: "B / P")
-            tool(.eraser, symbol: "eraser", label: "消しゴム", shortcut: "E")
+            // 矢印(操作なし)・ペン・消しゴム — Windows V1.1 の3ボタン構成。
+            toolButton(symbol: "cursorarrow", label: "矢印", shortcut: "A",
+                       selected: state.arrowMode) {
+                state.arrowMode = true
+            }
+            toolButton(symbol: "pencil", label: "ペン", shortcut: "B / P",
+                       selected: !state.arrowMode && state.tool == .pen) {
+                state.arrowMode = false
+                state.requestCanvas(.draw)
+                state.tool = .pen
+                state.applyToolState()
+            }
+            toolButton(symbol: "eraser", label: "消しゴム", shortcut: "E",
+                       selected: !state.arrowMode && state.tool == .eraser) {
+                state.arrowMode = false
+                state.requestCanvas(.draw)
+                state.tool = .eraser
+                state.applyToolState()
+            }
         }
     }
 
-    private func tool(_ tool: AkapenTool, symbol: String, label: String, shortcut: String) -> some View {
-        Button {
-            state.requestCanvas(.draw)
-            state.tool = tool
-            state.applyToolState()
-        } label: {
+    private func toolButton(symbol: String, label: String, shortcut: String,
+                            selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 16, weight: .medium))
                 .frame(width: 32, height: 32)
         }
-        .buttonStyle(CompactToolButtonStyle(selected: state.tool == tool))
+        .buttonStyle(CompactToolButtonStyle(selected: selected))
         .help("\(label) (\(shortcut))")
         .accessibilityLabel(label)
-        .accessibilityAddTraits(state.tool == tool ? .isSelected : [])
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var palette: some View {
@@ -85,9 +99,6 @@ struct SidePanelView: View {
 
     private var sizeControl: some View {
         VStack(spacing: 4) {
-            Text("サイズ")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
             CompactBrushSizeControl(
                 value: $state.brushSize,
                 color: NSColor(state.color),
@@ -183,40 +194,67 @@ private final class CompactBrushSizeNSView: NSView {
         setValue(BrushSizeKnob.adjust(value, key: key))
     }
 
+    // Windows V1.0/V1.1 正本のフェーダー描画(NativeUiRenderer.DrawFader と
+    // 同構成): 上=円形プレビュー、中央=左右対称の扇形レール+インク色の
+    // 値フィル、下=px 数値の即時表示。
     override func draw(_ dirtyRect: NSRect) {
         NSColor.clear.setFill()
         bounds.fill()
 
         let center = bounds.midX
-        let cap = NSBezierPath()
-        cap.move(to: NSPoint(x: center - 9, y: 4))
-        cap.line(to: NSPoint(x: center + 9, y: 4))
-        cap.line(to: NSPoint(x: center, y: 15))
-        cap.close()
-        NSColor.controlAccentColor.setFill()
-        cap.fill()
 
-        let normalized = (value - BrushSizeKnob.minimum) /
-            (BrushSizeKnob.maximum - BrushSizeKnob.minimum)
-        for index in 0..<5 {
-            let y = CGFloat(23 + index * 7)
-            let active = Double(4 - index) / 4.0 <= normalized
-            (active ? inkColor : NSColor.separatorColor).setStroke()
-            let tick = NSBezierPath()
-            tick.lineWidth = active ? 2 : 1
-            let half = CGFloat(3 + (4 - index))
-            tick.move(to: NSPoint(x: center - half, y: y))
-            tick.line(to: NSPoint(x: center + half, y: y))
-            tick.stroke()
-        }
+        // Circular preview (diameter follows the actual brush size, capped).
+        let previewMax: CGFloat = 44
+        let previewDiameter = min(previewMax, max(2, CGFloat(BrushSizeKnob.clamp(value))))
+        let previewCenterY: CGFloat = 28
+        inkColor.setFill()
+        NSBezierPath(ovalIn: NSRect(
+            x: center - previewDiameter / 2, y: previewCenterY - previewDiameter / 2,
+            width: previewDiameter, height: previewDiameter)).fill()
+        NSColor.separatorColor.setStroke()
+        NSBezierPath(ovalIn: NSRect(
+            x: center - previewMax / 2, y: previewCenterY - previewMax / 2,
+            width: previewMax, height: previewMax)).stroke()
 
+        // Symmetric fan rail (wide at the top = max, narrow at the bottom = min).
+        let control = ContractRect(x: 0, y: 0, width: Int(bounds.width), height: Int(bounds.height))
+        let rail = BrushSizeKnob.trackBounds(in: control)
+        let railTop = CGFloat(rail.y)
+        let railBottom = CGFloat(rail.bottom - 1)
+        let topHalf: CGFloat = 16
+        let bottomHalf: CGFloat = 2
+        let fan = NSBezierPath()
+        fan.move(to: NSPoint(x: center - topHalf, y: railTop))
+        fan.line(to: NSPoint(x: center + topHalf, y: railTop))
+        fan.line(to: NSPoint(x: center + bottomHalf, y: railBottom))
+        fan.line(to: NSPoint(x: center - bottomHalf, y: railBottom))
+        fan.close()
+        NSColor.quaternaryLabelColor.setFill()
+        fan.fill()
+        NSColor.tertiaryLabelColor.setStroke()
+        fan.stroke()
+
+        // Value fill: from the current value down to the bottom, in ink color.
+        let valueY = CGFloat(BrushSizeKnob.y(forValue: value, in: rail))
+        let t = min(1, max(0, (valueY - railTop) / max(1, railBottom - railTop)))
+        let valueHalf = topHalf + (bottomHalf - topHalf) * t
+        let fill = NSBezierPath()
+        fill.move(to: NSPoint(x: center - valueHalf, y: valueY))
+        fill.line(to: NSPoint(x: center + valueHalf, y: valueY))
+        fill.line(to: NSPoint(x: center + bottomHalf, y: railBottom))
+        fill.line(to: NSPoint(x: center - bottomHalf, y: railBottom))
+        fill.close()
+        inkColor.setFill()
+        fill.fill()
+
+        // Live px readout.
         let label = "\(Int(value.rounded())) px" as NSString
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
-            .foregroundColor: NSColor.secondaryLabelColor,
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: NSColor.labelColor,
         ]
         let size = label.size(withAttributes: attributes)
-        label.draw(at: NSPoint(x: center - size.width / 2, y: bounds.height - 14), withAttributes: attributes)
+        label.draw(at: NSPoint(x: center - size.width / 2, y: bounds.height - 22), withAttributes: attributes)
 
         if window?.firstResponder === self {
             NSColor.keyboardFocusIndicatorColor.setStroke()
@@ -238,8 +276,9 @@ private final class CompactBrushSizeNSView: NSView {
 
     private func updateValue(_ event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        let contract = ContractRect(x: 0, y: 0, width: Int(bounds.width), height: Int(bounds.height))
-        setValue(BrushSizeKnob.value(atY: Int(point.y), in: contract))
+        let control = ContractRect(x: 0, y: 0, width: Int(bounds.width), height: Int(bounds.height))
+        let rail = BrushSizeKnob.trackBounds(in: control)
+        setValue(BrushSizeKnob.value(atY: Int(point.y), in: rail))
     }
 
     private func setValue(_ newValue: Double) {
