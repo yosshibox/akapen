@@ -1,7 +1,18 @@
 # Akapen バージョンヒストリ
 
 Windows出荷版インストーラの変更履歴。新しい順に記載する。SHA-256 はリポジトリ `dist/` の
-成果物およびGitHub Release / 開発日誌の記録に基づく。dist の `*.exe` はGit LFS管理。
+成果物およびGitHub Release / 開発日誌の記録に基づく。dist の `*.exe` `*.msi` `*.dmg` はGit LFS管理。
+
+## 1.2.0 (2026-07-17) — Windows / Mac 同時リリース
+
+- バージョンをOS間で統一(以後、両OS同一バージョンで刻む)
+- 共通: UIアイコン刷新(Windows=Fluent UI System Icons / Mac=SF Symbols)、起動ロゴ(朱の一筆)、マニュアルOS別分割
+- Windows: 設定画面のカードUI化、MSIを全アーキテクチャの正式配布形式に
+- Mac: 初回リリース(Photoshop準拠キーマップ・ナビゲーター・15度回転・扇形フェーダー・筆圧トグル・連番先読み。macOS 13+、未署名dmg)
+- 配布物:
+  - `Akapen-1.2.0-win-x64.msi` — SHA-256 `0da23ec83ae55c782ce19897ce63c9cd61af8083a2e093c6f9216f505e5cd4e1`
+  - `Akapen-1.2.0-win-arm64.msi` — SHA-256 `6e40cc52831a05bb47916c72310ae8d091f2e1b7f4b3f6133246cee7038f2dfc`(実機未検証)
+  - `Akapen-1.2.0-macos.dmg` — SHA-256 `ccfa411003a29edf1f83bc1860f33958c4109e30092400aa688f00ef19c039ad`
 
 ## 1.1.2 (2026-07-17)
 
