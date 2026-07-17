@@ -159,6 +159,18 @@ internal static class Program
 
         try
         {
+            // Explorer may launch Akapen with a folder as the first argument.
+            // Resolve it before the native image decoder sees a directory path.
+            if (!headlessExport && !presentationSmoke &&
+                !string.IsNullOrWhiteSpace(imagePath) && Directory.Exists(imagePath))
+            {
+                ImageFolderSelectionResult selection = ImageFolderSelection.FindFirstSupportedImage(
+                    imagePath,
+                    Comparer<string>.Create(StrCmpLogicalW));
+                if (selection.ErrorMessage != null)
+                    AppDiagnostics.Write("explorer-launch", $"{imagePath}: {selection.ErrorMessage}");
+                imagePath = selection.ImagePath;
+            }
             if (headlessExport) return RunHeadlessExport(imagePath, cliOutDir);
             if (presentationSmoke) return RunSmokeTest();
             // Product startup is intentionally a quiet interactive shell. Smoke
@@ -168,6 +180,7 @@ internal static class Program
         }
         catch (Exception ex)
         {
+            AppDiagnostics.Write("unhandled", ex);
             Console.Error.WriteLine($"{LogPrefix} FAIL: unhandled exception: {ex}");
             return 2;
         }
@@ -1455,12 +1468,14 @@ internal static class Program
         }
         catch (COMException ex)
         {
+            AppDiagnostics.Write("folder-dialog", ex);
             MessageBox(hWnd, $"フォルダ選択を開始できませんでした。\n0x{ex.HResult:X8}", "Akapen", MB_ICONERROR);
         }
         catch (Exception ex)
         {
             // A filesystem/access failure after the dialog must never escape
             // Main and silently terminate the entire application.
+            AppDiagnostics.Write("folder-dialog", ex);
             MessageBox(hWnd, $"フォルダを開けませんでした。\n{ex.Message}", "Akapen", MB_ICONERROR);
         }
         finally
@@ -1473,10 +1488,16 @@ internal static class Program
     private static void OpenFirstImageInFolder(IntPtr hWnd, string folder)
     {
         if (!Directory.Exists(folder)) return;
-        string? first = Directory.EnumerateFiles(folder)
-            .Where(IsSupportedImage)
-            .OrderBy(path => path, Comparer<string>.Create(StrCmpLogicalW))
-            .FirstOrDefault();
+        ImageFolderSelectionResult selection = ImageFolderSelection.FindFirstSupportedImage(
+            folder,
+            Comparer<string>.Create(StrCmpLogicalW));
+        if (selection.ErrorMessage != null)
+        {
+            AppDiagnostics.Write("folder-enumeration", $"{folder}: {selection.ErrorMessage}");
+            MessageBox(hWnd, $"フォルダを読み込めませんでした。\n{selection.ErrorMessage}", "Akapen", MB_ICONERROR);
+            return;
+        }
+        string? first = selection.ImagePath;
         if (first == null)
         {
             MessageBox(hWnd, "このフォルダに対応画像がありません。", "Akapen", MB_ICONERROR);
@@ -1485,8 +1506,22 @@ internal static class Program
         OpenImageFile(hWnd, first);
     }
 
-    private static bool IsSupportedImage(string path) =>
-        Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".webp";
+    private static bool IsSupportedImage(string path) => ImageFolderSelection.IsSupportedImage(path);
+
+    private static void OpenDroppedPath(IntPtr hWnd, string path)
+    {
+        try
+        {
+            if (Directory.Exists(path)) OpenFirstImageInFolder(hWnd, path);
+            else if (File.Exists(path) && IsSupportedImage(path)) OpenImageFile(hWnd, path);
+            else MessageBox(hWnd, "対応画像または画像フォルダをドロップしてください。", "Akapen", MB_ICONERROR);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.Write("explorer-drop", ex);
+            MessageBox(hWnd, $"Explorer からの読込に失敗しました。\n{ex.Message}", "Akapen", MB_ICONERROR);
+        }
+    }
 
     private static void OpenImageFile(IntPtr hWnd, string path, bool saveCurrent = true)
     {
@@ -2172,10 +2207,7 @@ internal static class Program
                     var dropped = new StringBuilder((int)length + 1);
                     DragQueryFile(wParam, 0, dropped, (uint)dropped.Capacity);
                     DragFinish(wParam);
-                    string path = dropped.ToString();
-                    if (Directory.Exists(path)) OpenFirstImageInFolder(hWnd, path);
-                    else if (File.Exists(path) && IsSupportedImage(path)) OpenImageFile(hWnd, path);
-                    else MessageBox(hWnd, "対応画像または画像フォルダをドロップしてください。", "Akapen", MB_ICONERROR);
+                    OpenDroppedPath(hWnd, dropped.ToString());
                 }
                 return IntPtr.Zero;
             case WM_LBUTTONUP:

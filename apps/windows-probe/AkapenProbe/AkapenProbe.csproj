@@ -5,6 +5,9 @@
     <AssemblyName>Akapen</AssemblyName>
     <Product>Akapen</Product>
     <ApplicationTitle>Akapen</ApplicationTitle>
+    <Version>1.0.1</Version>
+    <AssemblyVersion>1.0.1.0</AssemblyVersion>
+    <FileVersion>1.0.1.0</FileVersion>
     <ApplicationIcon>..\..\..\assets\app-icon\akapen.ico</ApplicationIcon>
     <TargetFramework>net8.0</TargetFramework>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
