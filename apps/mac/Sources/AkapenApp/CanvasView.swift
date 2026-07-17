@@ -285,7 +285,12 @@ final class CanvasNSView: NSView {
     /// are classified as `.touch` (spec §5.2).
     private func classify(_ event: NSEvent) -> (Double, AkapenPointerKind) {
         if event.subtype == .tabletPoint {
-            return (Double(event.pressure), .pen)
+            // V1.2: the settings toggle (input.pressure, default on) flattens
+            // pen pressure to a fixed 1.0 — constant line width — matching the
+            // Windows V1.1.1 semantics.
+            let pressureEnabled = UserDefaults.standard.object(
+                forKey: AkapenSettingsKey.pressureEnabled) as? Bool ?? true
+            return (pressureEnabled ? Double(event.pressure) : 1.0, .pen)
         }
         return (1.0, .mouse)
     }
@@ -477,6 +482,13 @@ final class CanvasNSView: NSView {
         // '=' does nothing (spec §3 — no physical CARET fallback needed).
         case 116: return Int32(AKAPEN_PK_PAGE_UP)
         case 121: return Int32(AKAPEN_PK_PAGE_DOWN)
+        // V1.2 (Windows V1.1 の写像): Photoshop プリセットのキーと矢印。
+        case 11: return Int32(AKAPEN_PK_B)
+        case 18: return Int32(AKAPEN_PK_DIGIT1) // top-row 1
+        case 123: return Int32(AKAPEN_PK_ARROW_LEFT)
+        case 124: return Int32(AKAPEN_PK_ARROW_RIGHT)
+        case 126: return Int32(AKAPEN_PK_ARROW_UP)
+        case 125: return Int32(AKAPEN_PK_ARROW_DOWN)
         default: return Int32(AKAPEN_PK_OTHER)
         }
     }
@@ -490,7 +502,12 @@ final class CanvasNSView: NSView {
         // the base character.
         let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first?.value ?? 0
         let flags = event.modifierFlags
-        let code = akapen_resolve_key(
+        // V1.2: resolve against the user-selected keymap preset (default
+        // Photoshop, spec §10-14). The preset code mirrors AKAPEN_KEYMAP_*.
+        let preset = AkapenKeymapPreset.from(
+            raw: UserDefaults.standard.string(forKey: AkapenSettingsKey.keymapPreset))
+        let code = akapen_resolve_key_preset(
+            preset.code,
             scalar,
             physicalCode(for: event),
             flags.contains(.command) ? 1 : 0,

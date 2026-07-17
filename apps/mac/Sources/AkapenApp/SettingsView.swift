@@ -43,6 +43,37 @@ enum AkapenSettingsKey {
     static let fixedDir = "output.fixedDir"
     static let flatSuffix = "output.flatSuffix"
     static let strokesSuffix = "output.strokesSuffix"
+    // V1.2 (Windows V1.1.x の写像)。キー名は Windows の settings.json と 1:1。
+    static let keymapPreset = "keymap.preset"
+    static let pressureEnabled = "input.pressure"
+}
+
+/// キーマッププリセット(V1.2)。raw 値は Windows 側の設定値と同一で、
+/// C ABI の AKAPEN_KEYMAP_* へは `code` で写像する。既定は Photoshop 準拠。
+enum AkapenKeymapPreset: String, CaseIterable, Identifiable {
+    case photoshop
+    case clipstudio
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .photoshop: return "Photoshop 準拠（既定）"
+        case .clipstudio: return "CLIP STUDIO PAINT 準拠"
+        }
+    }
+
+    var code: Int32 {
+        switch self {
+        case .photoshop: return 1  // AKAPEN_KEYMAP_PHOTOSHOP
+        case .clipstudio: return 0  // AKAPEN_KEYMAP_CLIPSTUDIO
+        }
+    }
+
+    /// UserDefaults の生文字列から(未知の値は既定へ)。
+    static func from(raw: String?) -> AkapenKeymapPreset {
+        AkapenKeymapPreset(rawValue: raw ?? "") ?? .photoshop
+    }
 }
 
 /// 既定値。@AppStorage の初期値と、AppState 側のフォールバックで共有する。
@@ -69,8 +100,34 @@ struct SettingsView: View {
         AkapenOutputDirMode(rawValue: dirModeRaw) ?? AkapenSettingsDefault.dirMode
     }
 
+    @AppStorage(AkapenSettingsKey.keymapPreset) private var keymapPresetRaw: String =
+        AkapenKeymapPreset.photoshop.rawValue
+    @AppStorage(AkapenSettingsKey.pressureEnabled) private var pressureEnabled: Bool = true
+
     var body: some View {
         Form {
+            Section("ショートカット") {
+                Picker("キーマップ", selection: Binding(
+                    get: { AkapenKeymapPreset.from(raw: keymapPresetRaw) },
+                    set: { keymapPresetRaw = $0.rawValue }
+                )) {
+                    ForEach(AkapenKeymapPreset.allCases) { preset in
+                        Text(preset.label).tag(preset)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                Text("Photoshop 準拠: B=ブラシ、⌘⇧Z=やり直し、⌘1=100%、R / ⇧R=回転(15°)\nCLIP STUDIO 準拠: P=ペン、⌘Y=やり直し、- / ^=回転(15°)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Section("ペン") {
+                Toggle("筆圧を使う（線の太さに反映する）", isOn: $pressureEnabled)
+                Text("オフのときは筆圧を無視し、一定の太さで描きます")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             Section("出力先(§4.7)") {
                 Picker("方式", selection: Binding(
                     get: { dirMode },
