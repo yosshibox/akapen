@@ -32,7 +32,8 @@ internal sealed class NativeUiRenderer : IDisposable
     }
 
     public void Paint(int width, int height, DockSide side, UiState state, UiCommandId? hovered,
-                      string statusText, bool brushFaderFocused, float scale = 1)
+                      string statusText, bool brushFaderFocused, float scale = 1,
+                      NavigatorState? navigator = null)
     {
         _scale = Math.Max(0.5f, scale);
         Fill(new UiRect(0, 0, width, height), WindowSurface);
@@ -49,6 +50,9 @@ internal sealed class NativeUiRenderer : IDisposable
 
         foreach (int y in DockLayout.GroupSeparators(width, height, side, _scale))
             DrawLine(workspace.Dock.X + Px(16), y, workspace.Dock.Right - Px(16), y, Border, PxF(1));
+
+        if (navigator != null)
+            DrawNavigator(DockLayout.Navigator(width, height, side, _scale), navigator, state.Zoom);
 
         foreach (DockButton button in DockLayout.Buttons(width, height, side, _scale))
             DrawButton(button, UiCommandStateResolver.Resolve(button.Command, state), hovered == button.Command);
@@ -68,6 +72,65 @@ internal sealed class NativeUiRenderer : IDisposable
         UiRect fader = DockLayout.BrushFaderBounds(width, height, side, _scale);
         DrawFader(fader, state.BrushSize, state.Color);
         DrawStatus(width, height, statusText);
+    }
+
+    /// <summary>
+    /// Photoshop-style navigator (V1.1): the cached document thumbnail with a
+    /// live viewport rectangle, plus a zoom row (− / percentage / +) under it.
+    /// </summary>
+    private void DrawNavigator(NavigatorLayout layout, NavigatorState nav, float zoom)
+    {
+        Fill(layout.Thumbnail, White);
+        UiRect placement = NavigatorMath.ImagePlacement(layout.Thumbnail, nav.ImageWidth, nav.ImageHeight);
+        if (nav.ThumbBgra is { Length: > 0 } && nav.ThumbWidth > 0 && nav.ThumbHeight > 0)
+        {
+            GCHandle pinned = GCHandle.Alloc(nav.ThumbBgra, GCHandleType.Pinned);
+            try
+            {
+                if (GdipCreateBitmapFromScan0(nav.ThumbWidth, nav.ThumbHeight, nav.ThumbWidth * 4,
+                        PixelFormat32bppArgb, pinned.AddrOfPinnedObject(), out IntPtr bitmap) == 0)
+                {
+                    GdipSetInterpolationMode(_graphics, 7); // HighQualityBicubic
+                    GdipDrawImageRectI(_graphics, bitmap, placement.X, placement.Y, placement.Width, placement.Height);
+                    GdipDisposeImage(bitmap);
+                }
+            }
+            finally { pinned.Free(); }
+        }
+        DrawRect(layout.Thumbnail, Border, PxF(1));
+
+        // Viewport rectangle: map the four canvas corners through the inverse
+        // view transform into image space, then into thumbnail space. Under
+        // rotation this is a polygon, exactly like Photoshop's navigator.
+        if (nav.CanvasWidth > 0 && nav.CanvasHeight > 0)
+        {
+            GdipSetClipRectI(_graphics, layout.Thumbnail.X, layout.Thumbnail.Y,
+                layout.Thumbnail.Width, layout.Thumbnail.Height, 0);
+            var corners = new (double X, double Y)[]
+            {
+                (0, 0), (nav.CanvasWidth, 0), (nav.CanvasWidth, nav.CanvasHeight), (0, nav.CanvasHeight),
+            };
+            var points = new PointI[4];
+            for (int i = 0; i < 4; i++)
+            {
+                (double ix, double iy) = NavigatorMath.CanvasToImage(corners[i].X, corners[i].Y,
+                    nav.CanvasWidth, nav.CanvasHeight, nav.PanX, nav.PanY, nav.Zoom, nav.RotationDeg,
+                    nav.ImageWidth, nav.ImageHeight);
+                (float tx, float ty) = NavigatorMath.ImageToThumb(placement, nav.ImageWidth, nav.ImageHeight, ix, iy);
+                points[i] = new PointI { X = (int)MathF.Round(tx), Y = (int)MathF.Round(ty) };
+            }
+            DrawPolygon(points, Accent, PxF(1.6f));
+            GdipResetClip(_graphics);
+        }
+
+        // Zoom row: − / NNN% / +.
+        foreach ((UiRect button, string glyph) in new[] { (layout.ZoomOut, "−"), (layout.ZoomIn, "+") })
+        {
+            Fill(button, White);
+            DrawRect(button, Border, PxF(1));
+            DrawTextCentered(glyph, button, 13, Text, bold: true);
+        }
+        DrawTextCentered($"{zoom * 100:0}%", layout.ZoomLabel, 12, Text);
     }
 
     private void DrawEmptyOrLoading(int width, int height, bool loading)
@@ -339,4 +402,11 @@ internal sealed class NativeUiRenderer : IDisposable
     [DllImport("gdiplus.dll")] private static extern int GdipCreateFont(IntPtr family, float emSize, int style, int unit, out IntPtr font);
     [DllImport("gdiplus.dll")] private static extern int GdipDeleteFont(IntPtr font);
     [DllImport("gdiplus.dll", CharSet = CharSet.Unicode)] private static extern int GdipDrawString(IntPtr graphics, string text, int length, IntPtr font, ref RectF layout, IntPtr format, IntPtr brush);
+    private const int PixelFormat32bppArgb = 0x26200A;
+    [DllImport("gdiplus.dll")] private static extern int GdipCreateBitmapFromScan0(int width, int height, int stride, int format, IntPtr scan0, out IntPtr bitmap);
+    [DllImport("gdiplus.dll")] private static extern int GdipDisposeImage(IntPtr image);
+    [DllImport("gdiplus.dll")] private static extern int GdipDrawImageRectI(IntPtr graphics, IntPtr image, int x, int y, int width, int height);
+    [DllImport("gdiplus.dll")] private static extern int GdipSetInterpolationMode(IntPtr graphics, int mode);
+    [DllImport("gdiplus.dll")] private static extern int GdipSetClipRectI(IntPtr graphics, int x, int y, int width, int height, int combineMode);
+    [DllImport("gdiplus.dll")] private static extern int GdipResetClip(IntPtr graphics);
 }

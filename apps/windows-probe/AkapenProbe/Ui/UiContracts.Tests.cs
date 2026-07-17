@@ -27,10 +27,10 @@ internal static class UiContractTests
         Assert(UiSettingsStore.ParseDockSide("unexpected") == DockSide.Right, "unknown side falls back right");
         var right = DockLayout.DockBounds(800, 600, DockSide.Right);
         var left = DockLayout.DockBounds(800, 600, DockSide.Left);
-        Assert(right.X == 696 && right.Y == 0 && right.Width == 104, "tool dock uses the optimized narrow width on the complete right side");
+        Assert(right.X == 632 && right.Y == 0 && right.Width == 168, "tool dock is widened for the V1.1 navigator on the complete right side");
         var rightCanvas = DockLayout.CanvasBounds(800, 600, DockSide.Right);
         var leftCanvas = DockLayout.CanvasBounds(800, 600, DockSide.Left);
-        Assert(rightCanvas.X == 0 && rightCanvas.Width == 696 && rightCanvas.Height == 576, "loaded canvas ends before the right dock and above status");
+        Assert(rightCanvas.X == 0 && rightCanvas.Width == 632 && rightCanvas.Height == 576, "loaded canvas ends before the right dock and above status");
         Assert(leftCanvas == rightCanvas, "legacy dock side preference no longer changes the canonical right-side geometry");
         Assert(!rightCanvas.Contains(right.X + 10, right.Y + 10), "canvas and dock do not overlap");
         var standardButtons = DockLayout.Buttons(800, 600, DockSide.Right);
@@ -38,7 +38,25 @@ internal static class UiContractTests
         Assert(!standardButtons.Any(b => b.Command is UiCommandId.Open or UiCommandId.Save or UiCommandId.Undo or UiCommandId.Redo or UiCommandId.Zoom), "document, history, and zoom buttons are absent from the dock");
         Assert(DockLayout.GroupFor(UiCommandId.Open) == DockGroup.Document && DockLayout.GroupFor(UiCommandId.Save) == DockGroup.Document, "document commands share a visual group");
         Assert(DockLayout.GroupFor(UiCommandId.Pen) == DockGroup.Tools && DockLayout.GroupFor(UiCommandId.Color) == DockGroup.Style, "tool hierarchy is explicit");
-        Assert(DockLayout.GroupSeparators(800, 600, DockSide.Right).Count == 2, "tool, palette, and size regions have stable horizontal separators");
+        Assert(DockLayout.GroupSeparators(800, 600, DockSide.Right).Count == 3, "navigator, tool, and size regions have stable horizontal separators");
+
+        // Photoshop-style navigator (V1.1).
+        NavigatorLayout navigator = DockLayout.Navigator(800, 600, DockSide.Right);
+        Assert(right.Contains(navigator.Thumbnail.X, navigator.Thumbnail.Y) && navigator.Thumbnail.Right <= right.Right, "navigator thumbnail sits inside the dock");
+        Assert(navigator.Thumbnail.Y < standardButtons.Min(b => b.Bounds.Y), "navigator sits above the tool buttons at the top of the dock");
+        Assert(navigator.ZoomOut.Y >= navigator.Thumbnail.Bottom && navigator.ZoomIn.Right <= right.Right, "navigator zoom row sits under the thumbnail inside the dock");
+        Assert(navigator.ZoomOut.Right <= navigator.ZoomLabel.X && navigator.ZoomLabel.Right <= navigator.ZoomIn.X, "zoom-out, percentage, zoom-in order matches Photoshop");
+        UiRect place = NavigatorMath.ImagePlacement(navigator.Thumbnail, 1920, 1080);
+        Assert(place.Width == navigator.Thumbnail.Width || place.Height == navigator.Thumbnail.Height, "thumbnail placement letterboxes to the box");
+        Assert(Math.Abs(place.Width / (double)place.Height - 1920.0 / 1080.0) < 0.1, "thumbnail placement preserves the image aspect");
+        (double centerX, double centerY) = NavigatorMath.ThumbToImage(place, 1920, 1080, place.X + place.Width / 2, place.Y + place.Height / 2);
+        Assert(Math.Abs(centerX - 960) < 20 && Math.Abs(centerY - 540) < 20, "thumbnail center maps back to the image center");
+        (float panX, float panY) = NavigatorMath.PanToCenterOn(960, 540, 1920, 1080, 2.0f, 0);
+        Assert(Math.Abs(panX) < 0.001f && Math.Abs(panY) < 0.001f, "centering on the image center needs no pan");
+        (float panX2, float _) = NavigatorMath.PanToCenterOn(1920, 540, 1920, 1080, 1.0f, 0);
+        Assert(panX2 < 0, "centering on the right edge pans the image left");
+        (double vx, double vy) = NavigatorMath.CanvasToImage(500, 300, 1000, 600, 0, 0, 1.0f, 0, 1920, 1080);
+        Assert(Math.Abs(vx - 960) < 0.001 && Math.Abs(vy - 540) < 0.001, "canvas center maps to the image center at fit");
         var workspace = DockLayout.Workspace(1000, 600, DockSide.Right);
         Assert(workspace.Canvas.Right <= workspace.Dock.X, "the right dock never overlays the canvas");
         Assert(workspace.Status.Y == 576 && workspace.Status.Height == 24, "status bar mirrors the Mac 24-point status row");
@@ -51,7 +69,7 @@ internal static class UiContractTests
         Assert(AkapenPalette.Colors[0].Name == "黒" && AkapenPalette.Colors[9].Name == "白", "fixed palette order has stable endpoint names");
 
         UiRect fader = DockLayout.BrushFaderBounds(800, 600, DockSide.Right);
-        Assert(fader.Height >= 220 && fader.Width >= 80, "size control is a clearly vertical, easy-to-target fader");
+        Assert(fader.Height >= 120 && fader.Width >= 80, "size control is a clearly vertical, easy-to-target fader even with the navigator above it");
         Assert(fader.Y <= standardButtons.Max(button => button.Bounds.Bottom) + 12, "size fader sits immediately below pen and eraser");
         Assert(DockLayout.PaletteSwatches(800, 600, DockSide.Right).Min(item => item.Bounds.Y) > fader.Bottom, "color palette sits immediately below the size fader");
         Assert(BrushFader.ValueFromY(fader.Y, fader) == BrushFader.Max, "size control top means maximum size");
@@ -77,7 +95,7 @@ internal static class UiContractTests
         Assert(LaunchMode.IsProduct(new[] { @"C:\frames\001.png" }), "opening an image path still uses the product UI and tool dock");
         Assert(!LaunchMode.IsProduct(new[] { "--presentation-smoke" }), "explicit developer smoke mode does not use product UI");
         var dpi200 = DockLayout.Workspace(1600, 1200, DockSide.Right, 2.0f);
-        Assert(dpi200.Dock.Width == 208 && dpi200.Dock.Height == 1152 && dpi200.Status.Height == 48, "optimized right dock and status scale at 200 percent DPI");
+        Assert(dpi200.Dock.Width == 336 && dpi200.Dock.Height == 1152 && dpi200.Status.Height == 48, "widened right dock and status scale at 200 percent DPI");
         Assert(DockLayout.PaletteSwatches(1600, 1200, DockSide.Right, 2.0f).Select(item => item.Bounds.Y).Distinct().Count() == 5, "palette remains two columns at 200 percent DPI");
         Assert(DockLayout.BrushFaderBounds(1600, 1200, DockSide.Right, 2.0f).Width >= 160, "compact fader scales at 200 percent DPI");
 
@@ -125,6 +143,11 @@ internal static class UiContractTests
         try
         {
             UiSettings defaults = UiSettingsStore.Load(path);
+            Assert(UiSettingsStore.ParseKeymapPreset(defaults.KeymapPreset) == KeymapPresetKind.Photoshop, "keymap defaults to the Photoshop preset (V1.1)");
+            Assert(UiSettingsStore.ParseKeymapPreset("clipstudio") == KeymapPresetKind.ClipStudio, "CLIP STUDIO preset is selectable");
+            Assert(UiSettingsStore.ParseKeymapPreset("garbage") == KeymapPresetKind.Photoshop, "unknown keymap values fall back to the default preset");
+            Assert((int)KeymapPresetKind.ClipStudio == 0 && (int)KeymapPresetKind.Photoshop == 1, "preset codes match the AKAPEN_KEYMAP_* C ABI values");
+            Assert(defaults.PressureEnabled, "pen pressure defaults ON (V1.1.1)");
             Assert(UiSettingsStore.ParseBackdrop(defaults.CanvasBackdrop) == CanvasBackdrop.White, "canvas outside-image backdrop defaults to white");
             Assert(defaults.AutoSaveOnNavigate, "frame navigation auto-save defaults on");
             Assert(UiSettingsStore.ParseSaveLocation(defaults.SaveLocationMode) == SaveLocationMode.SiblingSubfolder, "save target defaults to a sibling subfolder");
@@ -134,8 +157,12 @@ internal static class UiContractTests
                 CanvasBackdrop = "black", AutoSaveOnNavigate = false,
                 SaveLocationMode = "customFolder", OutputFolderName = "checked",
                 CustomOutputPath = @"C:\review-output",
+                KeymapPreset = "clipstudio",
+                PressureEnabled = false,
             });
             UiSettings roundTrip = UiSettingsStore.Load(path);
+            Assert(!roundTrip.PressureEnabled, "pressure toggle round-trips");
+            Assert(UiSettingsStore.ParseKeymapPreset(roundTrip.KeymapPreset) == KeymapPresetKind.ClipStudio, "keymap preset round-trips");
             Assert(UiSettingsStore.ParseBackdrop(roundTrip.CanvasBackdrop) == CanvasBackdrop.Black, "black backdrop round-trips");
             Assert(!roundTrip.AutoSaveOnNavigate, "disabled navigation auto-save round-trips");
             Assert(UiSettingsStore.ParseSaveLocation(roundTrip.SaveLocationMode) == SaveLocationMode.CustomFolder, "custom save mode round-trips");

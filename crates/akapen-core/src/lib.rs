@@ -26,7 +26,10 @@ pub use brush::{Brush, PressureCurve};
 pub use coord::{client_to_canvas_point, ClientToCanvasInput, Point2, ViewTransform};
 pub use engine::{BakeDelta, CommittedStrokeRef, Engine, Phase, PointerSample};
 pub use export::ExportSet;
-pub use keymap::{resolve as resolve_key, Action, KeyInput, Modifiers, PhysicalKey};
+pub use keymap::{
+    resolve as resolve_key, resolve_preset as resolve_key_preset, Action, KeyInput, KeymapPreset,
+    Modifiers, PhysicalKey,
+};
 pub use palm::{route as palm_route, PalmState, Routing, PEN_PRIORITY_LOCK_MS};
 pub use raster::RgbaBuffer;
 pub use smoothing::{smooth_points, Smoothing};

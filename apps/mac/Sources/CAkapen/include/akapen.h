@@ -80,6 +80,19 @@ int akapen_pressure_stuck(AkapenEngine *engine);
 size_t akapen_composite_rgba(AkapenEngine *engine, uint8_t *out, size_t out_len);
 
 /*
+ * Downscales the display composite into a thumbnail no larger than
+ * max_w x max_h (aspect preserved, never upscaled) for the shell's navigator
+ * panel (V1.1). Writes the chosen dimensions to out_w/out_h (when non-NULL)
+ * and returns the bytes needed (out_w*out_h*4, straight RGBA8); if out is
+ * NULL or out_len is too small no pixels are written (same size-probe
+ * convention as akapen_composite_rgba). Returns 0 for a null engine or a
+ * zero max dimension.
+ */
+size_t akapen_thumbnail_rgba(AkapenEngine *engine, uint32_t max_w, uint32_t max_h,
+                             uint8_t *out, size_t out_len,
+                             uint32_t *out_w, uint32_t *out_h);
+
+/*
  * Sets the artifact-name suffixes used by akapen_export_to_dir (spec §4.7).
  * Default (also restored by passing NULL for either argument) is
  * flat_suffix = "review" / strokes_suffix = "strokes" (matches §4.3). Passing
@@ -126,7 +139,21 @@ enum {
     AKAPEN_PK_DIGIT0 = 13, AKAPEN_PK_SPACE = 14,
     AKAPEN_PK_BRACKET_LEFT = 15, AKAPEN_PK_BRACKET_RIGHT = 16,
     AKAPEN_PK_MINUS = 17, AKAPEN_PK_CARET = 18,
-    AKAPEN_PK_PAGE_UP = 19, AKAPEN_PK_PAGE_DOWN = 20
+    AKAPEN_PK_PAGE_UP = 19, AKAPEN_PK_PAGE_DOWN = 20,
+    AKAPEN_PK_B = 21, AKAPEN_PK_DIGIT1 = 22,
+    AKAPEN_PK_ARROW_LEFT = 23, AKAPEN_PK_ARROW_RIGHT = 24,
+    AKAPEN_PK_ARROW_UP = 25, AKAPEN_PK_ARROW_DOWN = 26
+};
+
+/* Keymap presets for akapen_resolve_key_preset (V1.1).
+ * CLIPSTUDIO (0) is the table akapen_resolve_key resolves against;
+ * PHOTOSHOP (1) copies Adobe Photoshop's default shortcuts verbatim where an
+ * Akapen action exists (B brush, Ctrl+Shift+Z redo, Ctrl+Alt+Z step backward,
+ * Ctrl+1 100%, R rotate view; Ctrl+Y deliberately unmapped) and is the
+ * product default. Unknown codes fall back to CLIPSTUDIO. */
+enum {
+    AKAPEN_KEYMAP_CLIPSTUDIO = 0,
+    AKAPEN_KEYMAP_PHOTOSHOP = 1
 };
 
 /* Action codes returned by akapen_resolve_key. 0 = no action. The tool
@@ -150,6 +177,12 @@ enum {
 int32_t akapen_resolve_key(uint32_t ch, int32_t physical,
                            int primary, int shift, int alt,
                            int composing, int text_editing);
+
+/* akapen_resolve_key with an explicit keymap preset (AKAPEN_KEYMAP_*).
+ * preset = AKAPEN_KEYMAP_CLIPSTUDIO behaves exactly like akapen_resolve_key. */
+int32_t akapen_resolve_key_preset(int32_t preset, uint32_t ch, int32_t physical,
+                                  int primary, int shift, int alt,
+                                  int composing, int text_editing);
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Palm rejection (spec §5.2).

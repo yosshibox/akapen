@@ -33,26 +33,29 @@ public static class UiCommand
         _ => throw new ArgumentOutOfRangeException(nameof(command))
     };
 
+    // Tooltip shortcut hints follow the Photoshop preset (the V1.1 default
+    // keymap). The CLIP STUDIO preset differences (Ctrl+Y redo, -/^ rotate,
+    // R = rect) are documented in settings, not per-button tooltips.
     public static string Shortcut(UiCommandId command) => command switch
     {
         UiCommandId.Open => "Ctrl+O",
         UiCommandId.Save => "Ctrl+S",
         UiCommandId.Undo => "Ctrl+Z",
-        UiCommandId.Redo => "Ctrl+Y / Ctrl+Shift+Z",
+        UiCommandId.Redo => "Ctrl+Shift+Z",
         UiCommandId.Arrow => "A",
-        UiCommandId.Pen => "P",
+        UiCommandId.Pen => "B / P",
         UiCommandId.Eraser => "E",
         UiCommandId.Pan => "Space+drag",
-        UiCommandId.Zoom => "Ctrl+Space",
-        UiCommandId.Rotate => "Shift+Space+drag",
+        UiCommandId.Zoom => "↑ / ↓ / Ctrl+Space",
+        UiCommandId.Rotate => "R / Shift+R（15°）",
         UiCommandId.BrushSize => "[ / ]",
         UiCommandId.Color => "X",
         UiCommandId.Pressure => "—",
         UiCommandId.Opacity => "—",
         UiCommandId.ViewFit => "Ctrl+0",
-        UiCommandId.Actual => "Ctrl+Alt+0",
-        UiCommandId.Previous => "Page Up",
-        UiCommandId.Next => "Page Down",
+        UiCommandId.Actual => "Ctrl+1 / Ctrl+Alt+0",
+        UiCommandId.Previous => "← / Page Up",
+        UiCommandId.Next => "→ / Page Down",
         UiCommandId.Settings => "Ctrl+,",
         _ => string.Empty
     };
@@ -145,6 +148,15 @@ public enum DockSide { Right, Left }
 
 public enum PressureCurve { Normal, Soft, Hard }
 
+/// <summary>
+/// Keymap preset (V1.1). Photoshop is the product default: shortcuts that
+/// exist in Adobe Photoshop's default set are copied verbatim; Akapen-only
+/// features keep their spec §3 keys. ClipStudio is the original spec §3 table.
+/// The numeric values are the stable AKAPEN_KEYMAP_* codes of
+/// <c>akapen_resolve_key_preset</c>.
+/// </summary>
+public enum KeymapPresetKind { ClipStudio = 0, Photoshop = 1 }
+
 public readonly record struct PaletteColor(string Name, uint Rgba);
 
 /// <summary>The fixed ten-color MS Paint-style palette shared by all shells.</summary>
@@ -220,6 +232,73 @@ public static class ResizeContract
 {
     public const bool RefitsImageOnEveryWindowResize = true;
 }
+
+/// <summary>
+/// Pure coordinate math for the Photoshop-style navigator (V1.1): where the
+/// image thumbnail sits inside the navigator box, and the mapping between
+/// thumbnail pixels, image pixels, and the canvas view transform. Shared by
+/// the renderer (viewport rectangle) and the shell (click/drag → pan).
+/// </summary>
+public static class NavigatorMath
+{
+    /// <summary>The letterboxed placement of the image inside the box.</summary>
+    public static UiRect ImagePlacement(UiRect box, uint imageW, uint imageH)
+    {
+        if (imageW == 0 || imageH == 0 || box.Width <= 0 || box.Height <= 0) return box;
+        double scale = Math.Min(box.Width / (double)imageW, box.Height / (double)imageH);
+        int w = Math.Max(1, (int)Math.Round(imageW * scale));
+        int h = Math.Max(1, (int)Math.Round(imageH * scale));
+        return new UiRect(box.X + (box.Width - w) / 2, box.Y + (box.Height - h) / 2, w, h);
+    }
+
+    public static (double X, double Y) ThumbToImage(UiRect placement, uint imageW, uint imageH, int x, int y)
+    {
+        double ix = (x - placement.X) / Math.Max(1.0, placement.Width) * imageW;
+        double iy = (y - placement.Y) / Math.Max(1.0, placement.Height) * imageH;
+        return (Math.Clamp(ix, 0, imageW), Math.Clamp(iy, 0, imageH));
+    }
+
+    public static (float X, float Y) ImageToThumb(UiRect placement, uint imageW, uint imageH, double imageX, double imageY)
+    {
+        return ((float)(placement.X + imageX / Math.Max(1u, imageW) * placement.Width),
+                (float)(placement.Y + imageY / Math.Max(1u, imageH) * placement.Height));
+    }
+
+    /// <summary>Canvas (client) point → image pixel, mirroring the shell's view transform.</summary>
+    public static (double X, double Y) CanvasToImage(double x, double y, double canvasW, double canvasH,
+        float panX, float panY, float zoom, float rotationDeg, uint imageW, uint imageH)
+    {
+        double cx = canvasW / 2.0 + panX, cy = canvasH / 2.0 + panY;
+        double a = -rotationDeg * Math.PI / 180.0;
+        double dx = (x - cx) / Math.Max(0.01f, zoom), dy = (y - cy) / Math.Max(0.01f, zoom);
+        return (dx * Math.Cos(a) - dy * Math.Sin(a) + imageW / 2.0,
+                dx * Math.Sin(a) + dy * Math.Cos(a) + imageH / 2.0);
+    }
+
+    /// <summary>
+    /// The pan that centers the view on the given image pixel (used when the
+    /// user clicks/drags inside the navigator thumbnail).
+    /// </summary>
+    public static (float PanX, float PanY) PanToCenterOn(double imageX, double imageY,
+        uint imageW, uint imageH, float zoom, float rotationDeg)
+    {
+        double theta = rotationDeg * Math.PI / 180.0;
+        double dx = imageX - imageW / 2.0, dy = imageY - imageH / 2.0;
+        return ((float)(-zoom * (Math.Cos(theta) * dx - Math.Sin(theta) * dy)),
+                (float)(-zoom * (Math.Sin(theta) * dx + Math.Cos(theta) * dy)));
+    }
+}
+
+/// <summary>
+/// Snapshot of everything the renderer needs to paint the navigator panel:
+/// the cached thumbnail (top-down 32-bit BGRA rows, GDI+ order) and the live
+/// view transform for the viewport rectangle.
+/// </summary>
+public sealed record NavigatorState(
+    byte[]? ThumbBgra, int ThumbWidth, int ThumbHeight,
+    uint ImageWidth, uint ImageHeight,
+    int CanvasWidth, int CanvasHeight,
+    float Zoom, float PanX, float PanY, float RotationDeg);
 
 public enum WorkspacePhase { Empty, Loading, Loaded }
 
