@@ -65,6 +65,6 @@ $sed = @(
     'PostInstallCmd=<None>', 'AdminQuietInstCmd=', 'UserQuietInstCmd=install.cmd') + $strings
 $sedPath = Join-Path $env:TEMP 'AkapenSetup.sed'
 Set-Content $sedPath $sed -Encoding ASCII
-& "$env:WINDIR\System32\iexpress.exe" /N /Q $sedPath
+Start-Process -FilePath "$env:WINDIR\System32\iexpress.exe" -ArgumentList @('/N', '/Q', $sedPath) -Wait -NoNewWindow
 if (-not (Test-Path $OutputPath)) { throw 'IExpress did not produce AkapenSetup.exe' }
 Write-Host "Akapen installer: $OutputPath"

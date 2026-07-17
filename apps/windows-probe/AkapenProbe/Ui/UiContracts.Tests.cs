@@ -158,3 +158,49 @@ internal static class UiContractTests
         if (!value) throw new InvalidOperationException(message);
     }
 }
+
+internal static class ReviewOutputLayoutTests
+{
+    public static void Run()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "akapen-review-layout-" + Guid.NewGuid().ToString("N"));
+        string sourceFolder = Path.Combine(root, "hoge");
+        string imagePath = Path.Combine(sourceFolder, "frame-001.png");
+        try
+        {
+            string sibling = ReviewOutputLayout.ResolveSiblingReviewDirectory(imagePath, "_review");
+            Assert(sibling == Path.Combine(sourceFolder, "hoge_review"), "default review folder uses the source folder name");
+            Assert(ReviewOutputLayout.ResolveSiblingReviewDirectory(imagePath, "checked") == Path.Combine(sourceFolder, "checked"), "custom review folder name is preserved");
+
+            string transient = ReviewOutputLayout.ResolveTransientDirectory(sibling);
+            Assert(transient == Path.Combine(sibling, "strokes"), "transient artifacts use a separate strokes folder");
+            Assert(ReviewOutputLayout.IsArtifactForStem("frame-001.strokes.png", "frame-001", "strokes", ".png"), "stroke PNG belongs to the current stem");
+            Assert(ReviewOutputLayout.IsArtifactForStem("frame-001-001.strokes.json", "frame-001", "strokes", ".json"), "collision-renamed stroke JSON belongs to the current stem");
+            Assert(!ReviewOutputLayout.IsArtifactForStem("frame-002.strokes.json", "frame-001", "strokes", ".json"), "a different frame is not cleaned up");
+
+            Directory.CreateDirectory(sibling);
+            string first = ReviewOutputLayout.ResolveCollisionFreeFlatPath(sibling, "frame-001.review.png");
+            File.WriteAllText(first, "existing");
+            string second = ReviewOutputLayout.ResolveCollisionFreeFlatPath(sibling, "frame-001.review.png");
+            Assert(second == Path.Combine(sibling, "frame-001-001.review.png"), "flat PNG collision gets a stable numeric suffix");
+
+            string transientPng = Path.Combine(transient, "frame-001.strokes.png");
+            string transientJson = Path.Combine(transient, "frame-001.strokes.json");
+            Directory.CreateDirectory(transient);
+            File.WriteAllText(transientPng, "png");
+            File.WriteAllText(transientJson, "json");
+            ReviewOutputLayout.DeleteTrackedArtifacts(new[] { transientPng, transientJson }, new[] { transient });
+            Assert(!File.Exists(transientPng) && !File.Exists(transientJson), "tracked transient artifacts are deleted");
+            Assert(!Directory.Exists(transient), "empty transient directory is deleted after cleanup");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static void Assert(bool value, string message)
+    {
+        if (!value) throw new InvalidOperationException(message);
+    }
+}
