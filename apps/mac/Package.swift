@@ -52,7 +52,6 @@ let package = Package(
             // assets/app-icon/akapen-pixel-source.png.
             resources: [
                 .copy("Resources/akapen-manual-ja.html"),
-                .copy("Resources/akapen-ui-icons.svg"),
                 .copy("Resources/akapen-icon.png"),
             ],
             linkerSettings: linkRust

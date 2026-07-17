@@ -36,6 +36,9 @@ struct CanvasView: NSViewRepresentable {
         // Re-read the composite (CPU) or redraw the frame (GPU) whenever the
         // revision changes.
         nsView.refresh()
+        // Brush cursor tracks tool / size / zoom (Windows V1.0 baseline:
+        // ペン・消しゴムのカーソルは表示倍率と実ブラシ径に同期した細い黒円).
+        nsView.window?.invalidateCursorRects(for: nsView)
     }
 }
 
@@ -69,6 +72,41 @@ final class CanvasNSView: NSView {
     // held, a Space drag rotates the canvas instead (spec §3.1).
     private var spaceDown = false
     private var panTool = false
+
+    // Brush cursor (Windows V1.0 baseline): a thin black circle whose
+    // diameter tracks brushSize × zoom, clamped like the Windows shell.
+    private var brushCursor: NSCursor?
+    private var brushCursorDiameter = 0
+
+    private func currentBrushCursor() -> NSCursor {
+        let diameter = max(3, min(256, Int(((CGFloat(state?.brushSize ?? 14)) * zoom).rounded())))
+        if let cached = brushCursor, diameter == brushCursorDiameter { return cached }
+        let pad = 6
+        let side = diameter + pad
+        let image = NSImage(size: NSSize(width: side, height: side))
+        image.lockFocus()
+        let circle = NSBezierPath(ovalIn: NSRect(
+            x: CGFloat(pad) / 2 + 0.5, y: CGFloat(pad) / 2 + 0.5,
+            width: CGFloat(diameter) - 1, height: CGFloat(diameter) - 1))
+        circle.lineWidth = 1
+        NSColor.black.setStroke()
+        circle.stroke()
+        image.unlockFocus()
+        let cursor = NSCursor(image: image, hotSpot: NSPoint(x: side / 2, y: side / 2))
+        brushCursor = cursor
+        brushCursorDiameter = diameter
+        return cursor
+    }
+
+    override func resetCursorRects() {
+        discardCursorRects()
+        guard let state, state.engine != nil, !state.arrowMode, !panTool, !spaceDown,
+              state.tool == .pen || state.tool == .eraser else {
+            addCursorRect(bounds, cursor: .arrow)
+            return
+        }
+        addCursorRect(bounds, cursor: currentBrushCursor())
+    }
 
     // Palm rejection (spec §5.2): the core state machine that keeps a resting
     // hand off the ink path. Every classified pointer event is routed through it
@@ -521,6 +559,7 @@ final class CanvasNSView: NSView {
     /// Cheap (a handful of Doubles) and deferred inside AppState, so calling
     /// it after every transform mutation is fine.
     private func syncViewState() {
+        window?.invalidateCursorRects(for: self)
         state?.reportViewTransform(
             zoom: Double(zoom), panX: Double(pan.width), panY: Double(pan.height),
             rotationDeg: Double(rotationDeg), canvasSize: bounds.size)

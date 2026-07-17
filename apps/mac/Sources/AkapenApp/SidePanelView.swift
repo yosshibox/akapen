@@ -31,19 +31,21 @@ struct SidePanelView: View {
     private var toolGroup: some View {
         HStack(spacing: 6) {
             // 矢印(操作なし)・ペン・消しゴム — Windows V1.1 の3ボタン構成。
-            // アイコンは両シェル共通の正本スプライト(assets/icons)。
-            toolButton(symbol: "tool.arrow", label: "矢印", shortcut: "A",
+            // アイコンは macOS ネイティブの SF Symbols(発注者決定 2026-07-17:
+            // SF Symbols は他プラットフォームで使えないため、無理に図案を
+            // 共通化せず Mac は Mac の流儀を維持する)。
+            toolButton(symbol: "cursorarrow", label: "矢印", shortcut: "A",
                        selected: state.arrowMode) {
                 state.arrowMode = true
             }
-            toolButton(symbol: "tool.pen", label: "ペン", shortcut: "B / P",
+            toolButton(symbol: "pencil", label: "ペン", shortcut: "B / P",
                        selected: !state.arrowMode && state.tool == .pen) {
                 state.arrowMode = false
                 state.requestCanvas(.draw)
                 state.tool = .pen
                 state.applyToolState()
             }
-            toolButton(symbol: "tool.eraser", label: "消しゴム", shortcut: "E",
+            toolButton(symbol: "eraser", label: "消しゴム", shortcut: "E",
                        selected: !state.arrowMode && state.tool == .eraser) {
                 state.arrowMode = false
                 state.requestCanvas(.draw)
@@ -56,8 +58,8 @@ struct SidePanelView: View {
     private func toolButton(symbol: String, label: String, shortcut: String,
                             selected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            AkapenIconView(name: symbol, color: selected ? AkapenBrand.red : .primary)
-                .frame(width: 22, height: 22)
+            Image(systemName: symbol)
+                .font(.system(size: 16, weight: .medium))
                 .frame(width: 32, height: 32)
         }
         .buttonStyle(CompactToolButtonStyle(selected: selected))
